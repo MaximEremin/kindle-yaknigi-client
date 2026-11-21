@@ -121,12 +121,6 @@ if APP_MODE then
 
     -- Nothing of the picture is to stay on the page: a flash to white, then what was underneath.
     local Screensaver = require("ui/screensaver")
-    -- A picture of one's own may have been copied since the app started.
-    local setup = Screensaver.setup
-    Screensaver.setup = function(...)
-        Prefs.apply_sleep_screen()
-        return setup(...)
-    end
     local close_widget = Screensaver.close_widget
     Screensaver.close_widget = function(this)
         local shown = this.screensaver_widget ~= nil
@@ -2064,23 +2058,84 @@ function Yaknigi:paths()
     return self.store and self.store.paths or {}
 end
 
---- What is known of this book's cover, if the card it was opened by has gone.
-local function known_cover(id)
-    if book_covers[id] then return book_covers[id] end
+local function cached_card(id)
     for _, card in ipairs(read_json(LIBRARY_CACHE) or {}) do
-        if card.book and card.book.uuid == id then return card.book.cover end
+        if card.book and card.book.uuid == id then return card end
     end
-    return nil
+end
+
+local function sleep_cover(store, best)
+    return best or store:cover_file() or Covers.find(COVERS, { book = { uuid = store.id } })
+end
+
+local function sleep_book(reader)
+    local plugin = reader.document and reader.yaknigi
+    local file = reader.document and reader.document.file
+        or G_reader_settings:readSetting("yaknigi_last_book")
+        or G_reader_settings:readSetting("lastfile")
+    if not file or file:sub(1, #BOOKS + 1) ~= BOOKS .. "/" then return end
+    local id = file:sub(#BOOKS + 2):match("^([%w_%-]+)/book%.epub$")
+    if not id then return end
+    local store = plugin and plugin.store or Store.open(BOOKS, id)
+    local doc_settings = reader.doc_settings or DocSettings:open(file)
+    local props = reader.doc_props or doc_settings:readSetting("doc_props", {})
+    local card = cached_card(id)
+    local title = card and card.book.title
+    if not title or title == "" then
+        title = props.title ~= "" and props.title or store.book and store.book.title
+    end
+    if not title or title == "" then return end
+    local author = card and card_authors(card) or ""
+    if author == "" then author = props.authors or "" end
+
+    local ratio
+    if plugin and plugin.shell then
+        ratio = plugin.shell:progress()
+    else
+        local saved = Session.read_reading(store.dir, {})
+        ratio = saved and saved / 100 or doc_settings:readSetting("percent_finished")
+    end
+    return {
+        title = title,
+        author = author:gsub("\n+", ", "),
+        ratio = ratio or 0,
+        cover = sleep_cover(store, Covers.find_best(COVERS, id)),
+    }
+end
+
+if APP_MODE then
+    local Screensaver = require("ui/screensaver")
+    local setup = Screensaver.setup
+    Screensaver.setup = function(saver, ...)
+        -- A picture of one's own may have been copied since the app started.
+        Prefs.apply_sleep_screen()
+        setup(saver, ...)
+        if saver.ui and Prefs.sleep_screen() == "cover_progress" then
+            local ok, image = pcall(function()
+                local book = sleep_book(saver.ui)
+                if book then return require("yaknigi/lockscreen").render(book) end
+            end)
+            if ok and image then
+                saver.image, saver.image_file = image, nil
+                saver.screensaver_type = "cover"
+                saver.screensaver_background = "white"
+            elseif not ok then
+                logger.warn("yaknigi: could not compose the sleep screen:", image)
+            end
+        end
+    end
 end
 
 --- What shows while the device sleeps: the original of the cover, and until it has arrived
 -- whatever picture of it there is. If this book has none yet, the last one stays.
 function Yaknigi:chooseSleepCover(store)
     local best = Covers.find_best(COVERS, store.id)
-    local cover = best or store:cover_file() or Covers.find(COVERS, { book = { uuid = store.id } })
+    local cover = sleep_cover(store, best)
     if cover then Prefs.apply_sleep_screen(cover) end
     if best or not NetworkMgr:isOnline() then return end
-    local pid = Covers.fetch_best(COVERS, store.id, Prefs.sleep_cover_urls(known_cover(store.id)))
+    local card = not book_covers[store.id] and cached_card(store.id)
+    local known = book_covers[store.id] or card and card.book.cover
+    local pid = Covers.fetch_best(COVERS, store.id, Prefs.sleep_cover_urls(known))
     if not pid then return end
     local function wait()
         if not ffiutil.isSubProcessDone(pid) then
@@ -2106,6 +2161,7 @@ function Yaknigi:onReaderReady()
     if APP_MODE then
         self.shell:install()
         self.shell_installed = true
+        G_reader_settings:saveSetting("yaknigi_last_book", store.epub)
         self:chooseSleepCover(store)
     end
     -- Not in the way of the first page.

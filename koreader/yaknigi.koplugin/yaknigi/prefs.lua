@@ -6,6 +6,7 @@ Prefs.PROGRESS = { "percent", "page", "page_of", "chapter", "book" }
 Prefs.SLEEP_MINUTES = { 5, 10, 15, 30, 60 }
 Prefs.SLEEP_SCREENS = {
     { "cover", "Обложка книги" },
+    { "cover_progress", "Обложка и прогресс" },
     { "faces", "Лица русской литературы" },
     { "own", "Своя картинка" },
     { "page", "Текущая страница" },
@@ -188,11 +189,12 @@ function Prefs.apply_sleep_screen(cover)
         s:saveSetting("screensaver_type", "document_cover")
         s:saveSetting("screensaver_document_cover", own.path)
         fills = true
-    elseif kind ~= "page" and file then
+    elseif kind ~= "page" and kind ~= "cover_progress" and file then
         s:saveSetting("screensaver_type", "document_cover")
         s:saveSetting("screensaver_document_cover", cover)
     else
-        s:saveSetting("screensaver_type", "disable") -- the page stays as it is
+        -- The app supplies the composed image at sleep time. Without it, keep the page.
+        s:saveSetting("screensaver_type", "disable")
     end
     s:saveSetting("screensaver_show_message", false)
     -- The picture whole, on white: KOReader then flashes the screen white before showing it.

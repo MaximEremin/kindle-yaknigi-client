@@ -112,7 +112,8 @@ function RoundedPicture:paintTo(bb, x, y)
     local size = self[1]:getSize()
     self.dimen = Geom:new{ x = x, y = y, w = size.w, h = size.h }
     self[1]:paintTo(bb, x, y)
-    local w, h, r = self.inner_w, self.inner_h, Kit.cover_radius()
+    local w, h = self.inner_w, self.inner_h
+    local r = self.radius or Kit.cover_radius()
     local left, top = x + math.floor((size.w - w) / 2), y + math.floor((size.h - h) / 2)
     local white = Blitbuffer.COLOR_WHITE
     for i = 0, r - 1 do
@@ -122,7 +123,8 @@ function RoundedPicture:paintTo(bb, x, y)
         bb:paintRect(left, top + h - 1 - i, inset, 1, white)
         bb:paintRect(left + w - inset, top + h - 1 - i, inset, 1, white)
     end
-    bb:paintBorder(left, top, w, h, Kit.px(1), Blitbuffer.COLOR_LIGHT_GRAY, r)
+    bb:paintBorder(left, top, w, h, self.border_width or Kit.px(1),
+        self.border_color or Blitbuffer.COLOR_LIGHT_GRAY, r)
 end
 
 Kit.RoundedPicture = RoundedPicture

@@ -37,6 +37,32 @@ local function reader()
     return require("apps/reader/readerui").instance
 end
 
+local function composed_sleep(percent, screenshot)
+    local Screensaver = require("ui/screensaver")
+    Screensaver:setup("suspend")
+    local image = Screensaver.image
+    local w, h = Screen:getWidth(), Screen:getHeight()
+    if not image or image:getWidth() ~= w or image:getHeight() ~= h then
+        fail("the composed sleep screen does not fill the display")
+    end
+    local scale = math.min(w / 600, h / 780)
+    local function px(n) return math.floor(n * scale + 0.5) end
+    local left = math.floor((w - px(540)) / 2)
+    local y = h - 2 * px(24) - px(4) - math.ceil(px(4) / 2)
+    local edge = left + math.floor(px(540) * percent / 100 + 0.5)
+    if percent > 0 and image:getPixel(edge - 2, y):getR() ~= 0 then
+        fail("the black progress bar does not reach " .. percent .. "%")
+    end
+    if percent < 100 and image:getPixel(edge + 1, y):getR() ~= 214 then
+        fail("the gray progress bar does not start after " .. percent .. "%")
+    end
+    Screensaver:show()
+    shot(screenshot)
+    Screensaver:close_widget()
+    Screensaver:cleanup()
+    UIManager:forceRePaint()
+end
+
 -- Runs in a coroutine; lets the UI loop run until cond() is true.
 local function wait(what, cond, seconds)
     local co = coroutine.running()
@@ -1024,9 +1050,8 @@ local function test_reading_screen()
 
     -- The sleep screen: the cover of the open book, or the page as it is.
     tap_widget(settings_row(settings, "sleep_screen"))
-    -- The cover, the collection, one's own picture, the page.
-    if #settings.options ~= 4 then fail("the sleep screens: " .. #settings.options) end
-    tap_widget(settings.options[4])
+    if #settings.options ~= 5 then fail("the sleep screens: " .. #settings.options) end
+    tap_widget(settings.options[5])
     if G_reader_settings:readSetting("screensaver_type") ~= "disable" then fail("sleep screen stays on the cover") end
     tap_widget(settings_row(settings, "sleep_screen"))
     tap_widget(settings.options[1])
@@ -1039,12 +1064,16 @@ local function test_reading_screen()
     say("sleep screen shows", cover:match("[^/]*$"))
     if G_reader_settings:readSetting("screensaver_img_background") ~= "white" then fail("no flash before the sleep screen") end
     if G_reader_settings:isTrue("screensaver_stretch_images") then fail("a book's cover is stretched") end
+    tap_widget(settings_row(settings, "sleep_screen"))
+    tap_widget(settings.options[2])
+    if G_reader_settings:readSetting("yaknigi_sleep_screen") ~= "cover_progress" then fail("no cover and progress choice") end
+    composed_sleep(math.floor(reader().yaknigi.shell:progress() * 100 + 0.5), "20h-sleep-cover-progress")
 
     -- One's own picture: until there is one, the cover; then the newest in its folder.
     local Prefs = require("yaknigi/prefs")
     local lfs = require("libs/libkoreader-lfs")
     tap_widget(settings_row(settings, "sleep_screen"))
-    tap_widget(settings.options[3])
+    tap_widget(settings.options[4])
     local own_dir = Prefs.own_sleep_dir()
     if lfs.attributes(own_dir, "mode") ~= "directory" then fail("no folder for one's own picture") end
     if G_reader_settings:readSetting("screensaver_document_cover") ~= cover then
@@ -1074,7 +1103,7 @@ local function test_reading_screen()
     settings:changed()
     tap_widget(settings_row(settings, "sleep_screen"))
     shot("20f-sleep-screens")
-    tap_widget(settings.options[2])
+    tap_widget(settings.options[3])
     if G_reader_settings:readSetting("yaknigi_sleep_screen") ~= "faces" then fail("the collection not chosen") end
     local portraits, kinds = 0, {}
     for name in lfs.dir(Prefs.FACES_DIR) do
@@ -2701,6 +2730,9 @@ local function script()
         fail("the library does not show how far the book is read: "
             .. tostring(find_item(menu, "Книга номер 0").mandatory) .. ", read " .. percent)
     end
+    G_reader_settings:saveSetting("yaknigi_sleep_screen", "cover_progress")
+    composed_sleep(percent, "30c-sleep-cover-progress-in-library")
+    G_reader_settings:saveSetting("yaknigi_sleep_screen", "cover")
     if not find_item(menu, "Книга номер 0").text:find("✓", 1, true) then fail("no mark on a whole book") end
     seconds = open(menu, "Книга номер 0")
     say(("second open: %.3fs"):format(seconds))
