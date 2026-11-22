@@ -82,14 +82,14 @@ Device Info.
 
 В настройках «Сон → Заставка» режим «Обложка и прогресс» показывает открытую книгу и её
 прогресс. В библиотеке он показывает последнюю открытую книгу. Для названия используется
-Oranienbaum. Чтобы использовать PP Right Gothic Medium из макета, скопируйте свой файл
-`PPRightGothic-Medium.otf` или `PPRightGothic-Medium.ttf` в папку `fonts` в корне Kindle
-и перезапустите клиент.
+Oranienbaum. Чтобы использовать PP Right Gothic Compact Dark из макета, скопируйте свой файл
+`PPRightGothic-CompactDark.otf` или `PPRightGothic-CompactDark.ttf` в папку `fonts` в корне
+Kindle и перезапустите клиент.
 
-Заголовки библиотеки и каталога используют PP Right Gothic Compact Dark, а счётчики
-и номера страниц — PP Right Gothic Light, если их файлы есть в той же папке
-(`PPRightGothic-CompactDark.otf` и `PPRightGothic-Light.otf`). Клиент подставляет
-встроенный шрифт, если этих файлов нет.
+PP Right Gothic Compact Dark также используется в заголовках обновлённых экранов.
+Для счётчиков и номеров страниц можно добавить в ту же папку
+`PPRightGothic-Light.otf` или `PPRightGothic-Light.ttf`. Если этих файлов нет,
+клиент использует встроенные шрифты.
 
 Не поддерживаются аудиокниги, комиксы и детский режим.
 
