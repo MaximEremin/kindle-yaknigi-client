@@ -73,7 +73,7 @@ function Tabs.bar(width, selected, on_select, resume)
     local side = math.min(Kit.px(56), math.floor(inner / 6))
     local gap = Kit.px(4)
     local divider_w = Kit.px(1)
-    local separation = math.min(Kit.px(28), math.floor(inner / 20))
+    local separation = math.min(Kit.px(16), math.floor(inner / 20))
     local dock_w = inner - #DESTINATIONS * side - (#DESTINATIONS - 1) * gap - 2 * separation - divider_w
     local book, dock = book_widget(dock_w, resume)
     local row = HorizontalGroup:new{ align = "center",

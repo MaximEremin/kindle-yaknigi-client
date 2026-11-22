@@ -112,12 +112,33 @@ Kit.Sheet = Sheet
 -- Its content is a box in which a picture of inner_w by inner_h stands in the middle.
 local RoundedPicture = WidgetContainer:extend{ inner_w = nil, inner_h = nil }
 
+-- Darken the pixels inside the cover's edge, in the same shape as the corner mask.
+local function darken_border(bb, x, y, w, h, radius, thickness, opacity)
+    local corner = math.max(radius, thickness)
+    for i = 0, corner - 1 do
+        local outer = i < radius and corner_inset(radius, i) or 0
+        local top, bottom = y + i, y + h - 1 - i
+        if i < thickness then
+            bb:darkenRect(x + outer, top, w - 2 * outer, 1, opacity)
+            bb:darkenRect(x + outer, bottom, w - 2 * outer, 1, opacity)
+        else
+            local edge = thickness + corner_inset(radius - thickness, i - thickness) - outer
+            bb:darkenRect(x + outer, top, edge, 1, opacity)
+            bb:darkenRect(x + w - outer - edge, top, edge, 1, opacity)
+            bb:darkenRect(x + outer, bottom, edge, 1, opacity)
+            bb:darkenRect(x + w - outer - edge, bottom, edge, 1, opacity)
+        end
+    end
+    bb:darkenRect(x, y + corner, thickness, h - 2 * corner, opacity)
+    bb:darkenRect(x + w - thickness, y + corner, thickness, h - 2 * corner, opacity)
+end
+
 function RoundedPicture:paintTo(bb, x, y)
     local size = self[1]:getSize()
     self.dimen = Geom:new{ x = x, y = y, w = size.w, h = size.h }
     self[1]:paintTo(bb, x, y)
     local w, h = self.inner_w, self.inner_h
-    local r = self.radius or Kit.cover_radius()
+    local r = math.min(self.radius or Kit.cover_radius(), math.floor(math.min(w, h) / 2))
     local left, top = x + math.floor((size.w - w) / 2), y + math.floor((size.h - h) / 2)
     local white = Blitbuffer.COLOR_WHITE
     for i = 0, r - 1 do
@@ -127,8 +148,13 @@ function RoundedPicture:paintTo(bb, x, y)
         bb:paintRect(left, top + h - 1 - i, inset, 1, white)
         bb:paintRect(left + w - inset, top + h - 1 - i, inset, 1, white)
     end
-    bb:paintBorder(left, top, w, h, self.border_width or Kit.px(1),
-        self.border_color or Blitbuffer.COLOR_LIGHT_GRAY, r)
+    local border = self.border_width or Kit.px(1)
+    if self.border_opacity then
+        border = math.min(border, math.floor(math.min(w, h) / 2))
+        if border > 0 then darken_border(bb, left, top, w, h, r, border, self.border_opacity) end
+    else
+        bb:paintBorder(left, top, w, h, border, self.border_color or Blitbuffer.COLOR_LIGHT_GRAY, r)
+    end
 end
 
 Kit.RoundedPicture = RoundedPicture

@@ -30,6 +30,8 @@ local Shelves = require("yaknigi/shelves")
 local Status = require("yaknigi/status")
 local Tabs = require("yaknigi/tabs")
 
+local PROGRESS_BADGE = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$") .. "/progress-badge.svg"
+
 -- item_table holds { text, title, authors, mandatory, card, sign_in, whole, cover, shelf }.
 -- What went wrong and what to do about it, each on a line of its own: together they
 -- would not fit the width of the screen.
@@ -116,7 +118,7 @@ local function fill_factor(file, w, h)
     return factor
 end
 
-local function plain_cover(item, w, h)
+local function plain_cover(item, w, h, translucent_edge)
     if item.cover then
         local ok, image = pcall(function()
             local widget = ImageWidget:new{
@@ -132,6 +134,8 @@ local function plain_cover(item, w, h)
             return Kit.RoundedPicture:new{
                 inner_w = w,
                 inner_h = h,
+                radius = translucent_edge and Kit.px(4) or nil,
+                border_opacity = translucent_edge and 0.18 or nil,
                 CenterContainer:new{ dimen = Geom:new{ w = w, h = h }, image },
             }
         end
@@ -150,8 +154,8 @@ local function plain_cover(item, w, h)
     }
 end
 
-local function cover_box(item, w, h)
-    local cover = plain_cover(item, w, h)
+local function cover_box(item, w, h, translucent_edge)
+    local cover = plain_cover(item, w, h, translucent_edge)
     if item.card and item.card.state == "finished" then return ReadMark.over(cover, w) end
     return cover
 end
@@ -257,7 +261,7 @@ end
 
 local HEADER_H, FOOTER_H, SEARCH_H, ROW_H = 60, 56, 56, 100
 local DESIGN_HEADER_H, DESIGN_PAGER_H = 80, 76
-local STRIP_HEADING_H, STRIP_HEADING_GAP = 32, 10
+local STRIP_HEADING_H = 32
 local CARD_LABEL_H, GRID_GAP = 66, 8
 local FEED_SECTIONS = 3
 
@@ -331,16 +335,22 @@ local function cover_height(item, width, limit)
 end
 
 local function cover_with_progress(item, width, height)
-    local cover = cover_box(item, width, height)
-    local label = screen_text("body", percentage(item) .. "%", 11, { color = Kit.paper_muted })
-    local badge = FrameContainer:new{
-        background = Blitbuffer.COLOR_WHITE,
-        radius = Kit.px(3),
-        bordersize = 0,
-        padding = Kit.px(2),
-        label,
+    local cover = cover_box(item, width, height, true)
+    local badge_w, badge_h = math.min(width, Kit.px(35)), math.min(height, Kit.px(20))
+    local text_w, text_h = math.floor(badge_w * 31 / 35), math.floor(badge_h * 16 / 20)
+    local label = screen_text("body", percentage(item) .. "%", 11,
+        { color = Blitbuffer.Color8(128), max_width = text_w })
+    local badge = OverlapGroup:new{
+        dimen = Geom:new{ w = badge_w, h = badge_h },
+        overlap_offset = { width - badge_w, height - badge_h },
+        allow_mirroring = false,
+        ImageWidget:new{ file = PROGRESS_BADGE, width = badge_w, height = badge_h, alpha = true, is_icon = true },
+        CenterContainer:new{
+            dimen = Geom:new{ w = text_w, h = text_h },
+            overlap_offset = { badge_w - text_w, badge_h - text_h },
+            label,
+        },
     }
-    badge.overlap_offset = { width - badge:getSize().w, height - badge:getSize().h }
     return OverlapGroup:new{ dimen = Geom:new{ w = width, h = height },
         allow_mirroring = false, cover, badge }
 end
@@ -385,7 +395,8 @@ function Library:coverRow(books, width, max_height, columns, mode, first, gap)
         local x = math.floor((i - first) * (width + gap) / columns)
         local previous = math.floor((i - first - 1) * (width + gap) / columns)
         if i > first then row[#row + 1] = HorizontalSpan:new{ width = x - previous - cover_w } end
-        local cover = mode == "reading" and cover_with_progress(item, cover_w, h) or cover_box(item, cover_w, h)
+        local cover = mode == "reading" and cover_with_progress(item, cover_w, h)
+            or cover_box(item, cover_w, h, true)
         local cell = VerticalGroup:new{ align = "left", Kit.gap(max_height - h), cover }
         if labels_h > 0 then
             local labels = card_labels(item, cover_w)
@@ -426,41 +437,44 @@ end
 function Library:homeBody(width, area)
     local body = VerticalGroup:new{ align = "left" }
     local gap = Kit.px(12)
+    local columns, cover_gap = 5, Kit.px(15)
+    local cover_w = cover_columns(width, columns, cover_gap)
     local free = area - 2 * Kit.px(44) - gap
-    local strips = {}
-    for _, id in ipairs { "reading", "want" } do
-        local books = Shelves.list(self.item_table, id)
-        local count = #books
-        if id == "reading" then table.remove(books, 1) end -- the latest is in the dock
-        if count > 0 then
-            strips[#strips + 1] = { id = id, books = books, count = count }
-            free = free - Kit.px(STRIP_HEADING_H + STRIP_HEADING_GAP) - gap
-            if id == "want" then free = free - Kit.px(CARD_LABEL_H) end
+    local strips, ideal_height = {}, 0
+    for _, strip in ipairs {
+        { id = "reading", mode = "reading", heading_gap = Kit.px(10), bottom_gap = Kit.px(20), ratio = 1.50 },
+        { id = "want", mode = "details", heading_gap = Kit.px(4), bottom_gap = Kit.px(18), ratio = 1.39 },
+    } do
+        strip.books = Shelves.list(self.item_table, strip.id)
+        strip.count = #strip.books
+        if strip.id == "reading" then table.remove(strip.books, 1) end -- the latest is in the dock
+        if strip.count > 0 then
+            strips[#strips + 1] = strip
+            free = free - Kit.px(STRIP_HEADING_H) - strip.bottom_gap
+            if #strip.books > 0 then
+                free = free - strip.heading_gap
+                if strip.mode == "details" then free = free - Kit.px(CARD_LABEL_H) end
+                strip.ideal = math.floor(cover_w * strip.ratio)
+                ideal_height = ideal_height + strip.ideal
+            end
         end
     end
     if #strips > 0 then free = free - gap end
-    local cover_count = 0
-    for _, strip in ipairs(strips) do
-        if #strip.books > 0 then cover_count = cover_count + 1 end
-    end
-    local columns = 5
-    local cover_gap = Kit.px(15)
-    local cover_w = cover_columns(width, columns, cover_gap)
-    local max_height = math.min(math.floor(cover_w * 1.5), math.floor(free / math.max(1, cover_count)))
+    local scale = math.min(1, math.max(0, free) / math.max(1, ideal_height))
     for _, strip in ipairs(strips) do
         local open = function() self:openShelf(strip.id) end
         local group = VerticalGroup:new{ align = "left",
             strip_heading(Shelves.name(strip.id), strip.count, width, open),
         }
-        if #strip.books > 0 and max_height >= Kit.px(45) then
-            local mode = strip.id == "reading" and "reading" or "details"
-            local row = self:coverRow(strip.books, width, max_height, columns, mode, nil, cover_gap)
+        local max_height = math.floor((strip.ideal or 0) * scale)
+        if max_height >= Kit.px(45) then
+            local row = self:coverRow(strip.books, width, max_height, columns, strip.mode, nil, cover_gap)
             self.strips[strip.id] = row
-            group[2] = Kit.gap(Kit.px(STRIP_HEADING_GAP))
+            group[2] = Kit.gap(strip.heading_gap)
             group[3] = row
         end
         body[#body + 1] = Kit.Tappable:new{ callback = open, group }
-        body[#body + 1] = Kit.gap(gap)
+        body[#body + 1] = Kit.gap(strip.bottom_gap)
     end
     if #strips > 0 then body[#body + 1] = Kit.gap(Kit.px(12)) end
     local left = math.floor(width / 2)
@@ -488,16 +502,19 @@ function Library:feedBody(width, area)
     self.total_pages = math.max(1, math.ceil(#sections / FEED_SECTIONS))
     if #sections > 0 and not state.finished then self.total_pages = self.total_pages + 1 end
     self.page = math.max(1, math.min(self.page, self.total_pages))
-    local cell = math.floor(area / FEED_SECTIONS)
-    local heading_h = Kit.px(STRIP_HEADING_H + STRIP_HEADING_GAP)
+    local section_gap = Kit.px(23)
+    local heading_gap = Kit.px(9)
+    local cell = math.floor((area - (FEED_SECTIONS - 1) * section_gap) / FEED_SECTIONS)
+    local heading_h = Kit.px(STRIP_HEADING_H) + heading_gap
     local gap = Kit.px(16)
     local columns = 6
     local cover_w = cover_columns(width, columns, gap)
-    local cover_h = math.max(1, math.min(math.floor(cover_w * 1.5), cell - heading_h - Kit.px(12)))
+    local cover_h = math.max(1, math.min(math.floor(cover_w * 1.48), cell - heading_h))
     local body = VerticalGroup:new{ align = "left" }
     self.feed_sections, self.feed_strips = {}, {}
     local start = (self.page - 1) * FEED_SECTIONS + 1
     for i = start, math.min(#sections, start + FEED_SECTIONS - 1) do
+        if i > start then body[#body + 1] = Kit.gap(section_gap) end
         local section = sections[i]
         local open = function() self:openSection(section) end
         local heading = strip_heading(section.name, #section.items, width, open)
@@ -506,8 +523,7 @@ function Library:feedBody(width, area)
         self.feed_strips[#self.feed_strips + 1] = row
         body[#body + 1] = Kit.Tappable:new{ callback = open,
             VerticalGroup:new{ align = "left",
-                heading, Kit.gap(Kit.px(STRIP_HEADING_GAP)), row,
-                Kit.gap(math.max(0, cell - heading_h - row:getSize().h)),
+                heading, Kit.gap(heading_gap), row,
             },
         }
     end
