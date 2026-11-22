@@ -21,7 +21,7 @@ local EDGE = Blitbuffer.Color8(235)
 local function title_face(size)
     for _, path in ipairs(FontList:getFontList()) do
         local name = path:match("([^/]+)$")
-        if name == "PPRightGothic-Medium.otf" or name == "PPRightGothic-Medium.ttf" then
+        if name == "PPRightGothic-CompactDark.otf" or name == "PPRightGothic-CompactDark.ttf" then
             local face = Font:getFace(name, size)
             if face then return face end
         end
