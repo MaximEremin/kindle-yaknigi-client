@@ -343,7 +343,7 @@ function Yaknigi:libraryItems(cards)
         if serial and episode and episodes then mandatory = "эп. " .. episode .. " из " .. episodes end
         items[#items + 1] = {
             kind = serial and "serial" or nil,
-            percent = serial and progress or nil,
+            percent = progress,
             text = (whole and "✓ " or "") .. title,
             title = title,
             authors = card_authors(card),
@@ -440,6 +440,7 @@ end
 
 --- The settings as a tab of the library.
 function Yaknigi:showSettings()
+    local library = self.library or shown_library
     UIManager:show(Settings:new{
         ui = self.ui,
         on_sign_out = saved_token() and function() self:signOut() end or nil,
@@ -452,8 +453,9 @@ function Yaknigi:showSettings()
         on_close_app = function()
             if self.library then self.library:onClose() end
         end,
-        on_tab = function(id)
-            if self.library then self.library:selectTab(id) end
+        on_tab = library and function(id) library:selectTab(id) end,
+        bottom_bar = library and function(width, select, close)
+            return library:bottomBar(width, "settings", select, close)
         end,
     })
 end
@@ -498,6 +500,7 @@ function Yaknigi:showLibrary(quiet)
         end,
         on_refresh = function() self:refreshLibrary(true) end,
         on_settings = function() self:showSettings() end,
+        on_book_details = function(item) self:showBookDetails(item) end,
         on_book_menu = function(item) self:showBookMenu(item) end,
         on_bookshelves = function() self:openList("bookshelves", nil, "Полки") end,
         on_new_shelf = function() self:newShelf() end,
@@ -999,13 +1002,45 @@ function Yaknigi:openFound(item)
     elseif item.in_library then
         self:takeFound(item)
     else
-        local screen
-        screen = BookCard:new{
-            item = item,
-            on_read = function() self:takeFound(item, screen) end,
-        }
-        UIManager:show(screen)
+        self:showBookDetails(item)
     end
+end
+
+--- Cover grids and the book menu both open this page, even for a book already in the library.
+function Yaknigi:showBookDetails(item)
+    local uuid = item.card.book.uuid
+    local card = self:ownedCard(uuid) or item.card
+    local owned = card.uuid ~= nil
+    if item.found then book_covers[uuid] = item.card.book.cover end
+    local library = self.library or shown_library
+    local screen
+    local function close() UIManager:close(screen) end
+    screen = BookCard:new{
+        item = {
+            title = item.title or item.text,
+            authors = item.authors,
+            cover = item.cover or Covers.find(COVERS, card),
+            annotation = item.annotation or card.book.annotation,
+        },
+        owned = owned or item.in_library,
+        on_read = function()
+            if item.unavailable then
+                self:openItem(item)
+            elseif owned then
+                close()
+                self:openCard(card)
+            else
+                self:takeFound(item, screen)
+            end
+        end,
+        bottom_bar = library and function(width)
+            return library:bottomBar(width, library:currentTab(), function(id)
+                close()
+                library:selectTab(id)
+            end, close)
+        end,
+    }
+    UIManager:show(screen)
 end
 
 --- Gets the card of a book, from Yandex and into the library if need be. A serial comes with its
@@ -1351,31 +1386,12 @@ end
 function Yaknigi:showBookMenu(item)
     local uuid = item.card.book.uuid
     local card = self:ownedCard(uuid) or item.card
-    local function read()
-        if card.uuid then self:openCard(card) else self:openFound(item) end
-    end
     local serial = item.kind == "serial"
     local entries = { {
         key = "about",
         text = "О книге",
         icon = "info",
-        action = function()
-            local screen
-            screen = BookCard:new{
-                item = {
-                    title = item.title,
-                    authors = item.authors,
-                    cover = item.cover,
-                    annotation = item.annotation or card.book.annotation,
-                },
-                owned = card.uuid ~= nil,
-                on_read = function()
-                    UIManager:close(screen)
-                    read()
-                end,
-            }
-            UIManager:show(screen)
-        end,
+        action = function() self:showBookDetails(item) end,
     } }
     if saving[uuid] then
         entries[#entries + 1] = { key = "saving", text = "Сохраняю…", icon = "wait", disabled = true }

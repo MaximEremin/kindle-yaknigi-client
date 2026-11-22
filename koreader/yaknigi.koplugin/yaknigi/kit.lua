@@ -22,6 +22,10 @@ local Screen = Device.screen
 
 local Kit = {}
 
+Kit.paper_gray = Blitbuffer.Color8(234)
+Kit.paper_line = Blitbuffer.Color8(218)
+Kit.paper_muted = Blitbuffer.Color8(119)
+
 function Kit.px(n) return Screen:scaleBySize(n) end
 -- Corners of what lies on the page and of what holds a picture.
 function Kit.cover_radius() return Kit.px(6) end
@@ -204,6 +208,23 @@ function Kit.button(content, width, height, callback)
     }
 end
 
+--- A filled button, with an outline for the selected state.
+function Kit.rounded(content, width, height, selected)
+    local border = selected and Kit.px(2) or 0
+    return FrameContainer:new{
+        background = Kit.paper_gray,
+        color = Blitbuffer.COLOR_BLACK,
+        bordersize = border,
+        padding = 0,
+        radius = math.floor(height / 2),
+        CenterContainer:new{ dimen = Geom:new{ w = width - 2 * border, h = height - 2 * border }, content },
+    }
+end
+
+function Kit.round_button(content, width, height, callback, selected)
+    return Tappable:new{ callback = callback, Kit.rounded(content, width, height, selected) }
+end
+
 -- Content moved inside a box of a fixed size, for what no container can align by itself.
 local Placed = WidgetContainer:extend{ width = 0, height = 0, dx = 0, dy = 0 }
 
@@ -246,6 +267,7 @@ function Kit.icon(name, side, opts)
         width = side,
         height = side,
         dim = opts and opts.dim or nil,
+        alpha = opts and opts.alpha or false,
     }
 end
 

@@ -17,6 +17,7 @@ local Screen = Device.screen
 local Kit = require("yaknigi/kit")
 local Library = require("yaknigi/library")
 local Status = require("yaknigi/status")
+local Tabs = require("yaknigi/tabs")
 
 local HEADER_H, TOP_H, BUTTON_H, NOTE_H = 60, 230, 60, 34
 
@@ -26,6 +27,7 @@ local BookCard = InputContainer:extend{
     item = nil,
     on_read = nil,
     owned = nil, -- in the library already: nothing will come of reading it but reading
+    bottom_bar = nil,
 }
 
 function BookCard:init()
@@ -56,7 +58,7 @@ function BookCard:init()
             height_overflow_show_ellipsis = true,
         },
     }
-    if item.authors ~= "" then
+    if item.authors and item.authors ~= "" then
         lines[#lines + 1] = Kit.gap(Kit.px(6))
         lines[#lines + 1] = Kit.text(item.authors, 17, { color = Blitbuffer.COLOR_DARK_GRAY, max_width = text_w })
     end
@@ -94,7 +96,8 @@ function BookCard:init()
     }
 
     local body_top = header_h + Kit.px(1)
-    local foot_top = H - button_h - note_h - Kit.px(12)
+    local bottom_h = self.bottom_bar and Tabs.height() or 0
+    local foot_top = H - bottom_h - button_h - note_h - Kit.px(12)
     local frame = OverlapGroup:new{
         dimen = self.dimen:copy(),
         allow_mirroring = false,
@@ -102,8 +105,8 @@ function BookCard:init()
         FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, body_top }, top },
         FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, foot_top }, foot },
     }
-    if item.annotation and item.annotation ~= "" then
-        local annotation_top = body_top + Kit.px(TOP_H)
+    local annotation_top = body_top + Kit.px(TOP_H)
+    if item.annotation and item.annotation ~= "" and foot_top > annotation_top + Kit.px(12) then
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, annotation_top },
             TextBoxWidget:new{
                 text = item.annotation,
@@ -114,6 +117,12 @@ function BookCard:init()
                 height_overflow_show_ellipsis = true,
             },
         }
+    end
+    if self.bottom_bar then
+        local bar
+        bar, self.tab_cells, self.dock_widget = self.bottom_bar(W)
+        frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
+            overlap_offset = { 0, H - bottom_h }, bar }
     end
     self[1] = FrameContainer:new{ background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, frame }
 end

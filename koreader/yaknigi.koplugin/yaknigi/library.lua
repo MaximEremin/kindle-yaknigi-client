@@ -1,5 +1,5 @@
 -- The screens outside the book: the shelves, Yandex's feed and the search over all its books,
--- with the tabs to go between them and the book being read docked above the tabs.
+-- with shared bottom navigation and a shortcut back to reading.
 local Blitbuffer = require("ffi/blitbuffer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
@@ -22,6 +22,7 @@ local Screen = Device.screen
 
 local Catalogue = require("yaknigi/catalogue")
 local Feed = require("yaknigi/feed")
+local Fonts = require("yaknigi/fonts")
 local Kit = require("yaknigi/kit")
 local ReadMark = require("yaknigi/readmark")
 local SearchBox = require("yaknigi/searchbox")
@@ -61,6 +62,7 @@ local Library = InputContainer:extend{
     load_feed = nil, -- function(): the feed as it was saved, for showing at once
     on_covers = nil, -- function(cards): gets the covers that are missing
     on_bookshelves = nil, -- function(): Yandex's shelves, on a screen of their own
+    on_book_details = nil, -- function(item): show the card of a book in a cover grid
     on_book_menu = nil, -- function(item): what can be done with a book
     on_add = nil, -- function(item): puts a book found into the library
     on_save = nil, -- function(item): saves a book on the device
@@ -254,189 +256,260 @@ function Library:inLibrary(item)
 end
 
 local HEADER_H, FOOTER_H, SEARCH_H, ROW_H = 60, 56, 56, 100
-local SHELF_ROW_H, STRIP_HEADING_H, STRIP_LABEL_H, STRIP_GAP = 52, 40, 24, 14
-local BIGGEST_COVER_H, SMALLEST_COVER_H = 190, 110
-local DOCK_H, DOCK_LINE_H, DOCK_COVER_H = 72, 3, 60
-local FEED_SECTIONS = 3 -- on a page
+local DESIGN_HEADER_H, DESIGN_PAGER_H = 80, 76
+local STRIP_HEADING_H, STRIP_HEADING_GAP = 32, 10
+local CARD_LABEL_H, GRID_GAP = 66, 8
+local FEED_SECTIONS = 3
 
---- The book being read, a tap away on the screens where one might choose what to read.
-function Library:dock(item, width)
-    local percent = math.max(0, math.min(100, item.percent or tonumber((item.mandatory or ""):match("%d+")) or 0))
-    local pad = Kit.px(16)
-    local done = math.floor(width * percent / 100)
-    local thickness = Kit.px(DOCK_LINE_H)
-    local bar = HorizontalGroup:new{ align = "top" }
-    if done > 0 then
-        bar[1] = LineWidget:new{ dimen = Geom:new{ w = done, h = thickness }, background = Blitbuffer.COLOR_BLACK }
-    end
-    if done < width then
-        bar[#bar + 1] = LineWidget:new{ dimen = Geom:new{ w = width - done, h = thickness }, background = Blitbuffer.COLOR_LIGHT_GRAY }
-    end
-    local cover_h = Kit.px(DOCK_COVER_H)
-    local cover_w = math.floor(cover_h * 2 / 3)
-    local pill_w, pill_h = Kit.px(92), Kit.px(38)
-    local pill = FrameContainer:new{
-        background = Blitbuffer.COLOR_LIGHT_GRAY,
-        radius = math.floor(pill_h / 2),
-        bordersize = 0,
-        padding = 0,
-        CenterContainer:new{ dimen = Geom:new{ w = pill_w, h = pill_h }, Kit.text("Читать", 15, { bold = true }) },
+local function screen_text(style, text, size, opts)
+    opts = opts or {}
+    opts.face = Fonts.screen_face(style, size)
+    return Kit.text(text, size, opts)
+end
+
+local function percentage(item)
+    return math.floor(math.max(0, math.min(100, item.percent or 0)))
+end
+
+function Library:bottomBar(width, selected, on_select, on_read)
+    local item = not self.on_sign_in and Shelves.list(self.item_table or {}, "reading")[1]
+    local resume = item and {
+        title = item.title or item.text,
+        author = item.authors,
+        percent = percentage(item),
+        cover = function(w, h) return cover_box(item, w, h) end,
+        read = function()
+            if on_read then on_read() end
+            self:onMenuSelect(item)
+        end,
     }
-    local gap = Kit.px(12)
-    local text_w = width - 2 * pad - cover_w - pill_w - 2 * gap
-    local names = VerticalGroup:new{ align = "left",
-        Kit.text(item.title or item.text, 16, { bold = true, max_width = text_w }),
-    }
-    if item.authors and item.authors ~= "" then
-        names[2] = Kit.gap(Kit.px(2))
-        names[3] = Kit.text(item.authors, 14, { color = Blitbuffer.COLOR_DARK_GRAY, max_width = text_w })
-    end
-    self.dock_item = item
-    self.dock_widget = Kit.Tappable:new{
-        callback = function() self:onMenuSelect(item) end,
-        VerticalGroup:new{ align = "left",
-            bar,
-            LeftContainer:new{
-                dimen = Geom:new{ w = width, h = Kit.px(DOCK_H) },
-                HorizontalGroup:new{ align = "center",
-                    HorizontalSpan:new{ width = pad },
-                    cover_box(item, cover_w, cover_h),
-                    HorizontalSpan:new{ width = gap },
-                    Kit.fixed(names, text_w),
-                    HorizontalSpan:new{ width = gap },
-                    pill,
-                },
+    local bar, cells, dock = Tabs.bar(width, selected, on_select, resume)
+    return bar, cells, dock, item
+end
+
+-- The count and chevron sit by the name, with the full heading width tappable.
+local function strip_heading(name, count, width, callback)
+    local gap = Kit.px(8)
+    local number = screen_text("number", tostring(count), 28)
+    local icon = Kit.icon("chevron.right", Kit.px(16))
+    local max_width = width - number:getSize().w - icon:getSize().w - 2 * gap
+    return Kit.Tappable:new{
+        callback = callback,
+        LeftContainer:new{ dimen = Geom:new{ w = width, h = Kit.px(STRIP_HEADING_H) },
+            HorizontalGroup:new{ align = "center",
+                screen_text("heading", name, 28, { max_width = max_width }),
+                HorizontalSpan:new{ width = gap },
+                number,
+                HorizontalSpan:new{ width = gap },
+                icon,
             },
         },
     }
-    return self.dock_widget
 end
 
---- A name to tap at the left, how many there are and a chevron at the right.
-local function heading_row(name, count, width, height, callback, size, icon)
-    local right, room = Kit.value_and_chevron(count and tostring(count) or nil)
-    local box = Geom:new{ w = width + room, h = height }
-    local title_w = width - right:getSize().w - Kit.px(12) + room
-    local left = HorizontalGroup:new{ align = "center" }
-    if icon then
-        local side = Kit.px(26)
-        left[1] = Kit.icon(icon, side)
-        left[2] = HorizontalSpan:new{ width = Kit.px(14) }
-        title_w = title_w - side - Kit.px(14)
-    end
-    left[#left + 1] = Kit.text(name, size, { bold = not icon, max_width = title_w })
-    return Kit.Tappable:new{
-        callback = callback,
-        OverlapGroup:new{
-            dimen = box:copy(),
-            allow_mirroring = false,
-            LeftContainer:new{ dimen = box:copy(), left },
-            RightContainer:new{ dimen = box:copy(), right },
-        },
-    }
+local function cover_columns(width, count, gap)
+    return math.max(1, math.floor((width - (count - 1) * gap) / count))
 end
 
---- A row of covers, as many as fit, standing from margin to margin.
-function Library:coverRow(books, width, cover_h, with_progress)
-    local cover_w = math.floor(cover_h * 2 / 3)
-    local gap = Kit.px(STRIP_GAP)
-    local fit = math.max(1, math.floor((width + gap) / (cover_w + gap)))
-    if #books >= fit and fit > 1 then gap = math.floor((width - fit * cover_w) / (fit - 1)) end
-    local row = HorizontalGroup:new{ align = "top" }
-    for i = 1, math.min(fit, #books) do
-        local item = books[i]
-        local cell = VerticalGroup:new{ align = "left", cover_box(item, cover_w, cover_h) }
-        if with_progress then
-            cell[2] = LeftContainer:new{
-                dimen = Geom:new{ w = cover_w, h = Kit.px(STRIP_LABEL_H) },
-                Kit.text(item.mandatory or "", 14, { color = Blitbuffer.COLOR_DARK_GRAY }),
-            }
+-- Preserve each image's proportions where it fits the row. Crop very tall images in
+-- the reserved space so their neighbours can keep the same width and baseline.
+local cover_ratios = {}
+
+local function cover_height(item, width, limit)
+    if not item.cover then return math.min(limit, math.floor(width * 1.45)) end
+    local ratio = cover_ratios[item.cover]
+    if not ratio then
+        local image = ImageWidget:new{ file = item.cover, scale_factor = 1 }
+        local ok = pcall(image.getSize, image)
+        if ok then
+            ratio = image:getOriginalHeight() / image:getOriginalWidth()
+            cover_ratios[item.cover] = ratio
         end
-        if i > 1 then row[#row + 1] = HorizontalSpan:new{ width = gap } end
-        row[#row + 1] = Kit.Tappable:new{ callback = function() self:onMenuSelect(item) end, cell }
+        image:free()
+    end
+    return math.max(1, math.min(limit, math.floor(width * (ratio or 1.45) + 0.5)))
+end
+
+local function cover_with_progress(item, width, height)
+    local cover = cover_box(item, width, height)
+    local label = screen_text("body", percentage(item) .. "%", 11, { color = Kit.paper_muted })
+    local badge = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Kit.px(3),
+        bordersize = 0,
+        padding = Kit.px(2),
+        label,
+    }
+    badge.overlap_offset = { width - badge:getSize().w, height - badge:getSize().h }
+    return OverlapGroup:new{ dimen = Geom:new{ w = width, h = height },
+        allow_mirroring = false, cover, badge }
+end
+
+local function card_labels(item, width)
+    local labels = VerticalGroup:new{ align = "left", Kit.gap(Kit.px(8)) }
+    if item.authors and item.authors ~= "" then
+        labels[#labels + 1] = screen_text("body", item.authors, 11,
+            { max_width = width, color = Kit.paper_muted })
+    end
+    if item.title and item.title ~= "" then
+        local face = Fonts.screen_face("body", 14)
+        local line = Kit.px(19)
+        labels[#labels + 1] = TextBoxWidget:new{
+            text = (item.title:gsub("[\r\n]+", " ")),
+            face = face,
+            width = width,
+            line_height = line / face.size - 1,
+            height = 2 * line,
+            height_adjust = true,
+            height_overflow_show_ellipsis = true,
+        }
+    end
+    return labels
+end
+
+--- Equal-width covers with a shared baseline. Preview rows can omit book labels.
+function Library:coverRow(books, width, max_height, columns, mode, first, gap)
+    first, gap = first or 1, gap or Kit.px(GRID_GAP)
+    local cover_w = cover_columns(width, columns, gap)
+    local row = HorizontalGroup:new{ align = "top" }
+    local heights = {}
+    local last = math.min(#books, first + columns - 1)
+    for i = first, last do
+        heights[i] = cover_height(books[i], cover_w, max_height)
+    end
+    local labels_h = mode == "details" and Kit.px(CARD_LABEL_H) or 0
+    for i = first, last do
+        local item = books[i]
+        local h = heights[i]
+        -- Each column gets its share of any rounding left over by the division.
+        local x = math.floor((i - first) * (width + gap) / columns)
+        local previous = math.floor((i - first - 1) * (width + gap) / columns)
+        if i > first then row[#row + 1] = HorizontalSpan:new{ width = x - previous - cover_w } end
+        local cover = mode == "reading" and cover_with_progress(item, cover_w, h) or cover_box(item, cover_w, h)
+        local cell = VerticalGroup:new{ align = "left", Kit.gap(max_height - h), cover }
+        if labels_h > 0 then
+            local labels = card_labels(item, cover_w)
+            cell[3] = labels
+            cell[4] = Kit.gap(math.max(0, labels_h - labels:getSize().h))
+        end
+        row[#row + 1] = Kit.Tappable:new{
+            callback = function()
+                if mode == "reading" then self:onMenuSelect(item)
+                else self.on_book_details(item) end
+            end,
+            cell,
+        }
         self.rows[#self.rows + 1] = item
     end
     return row
 end
 
---- A shelf's name and its covers.
-function Library:strip(id, books, width, cover_h, with_progress)
-    local row = self:coverRow(books, width, cover_h, with_progress)
-    self.strips[id] = row
-    return VerticalGroup:new{ align = "left",
-        heading_row(Shelves.name(id), #Shelves.list(self.item_table, id), width, Kit.px(STRIP_HEADING_H),
-            function() self:openShelf(id) end, 20),
-        row,
+local function quick_link(name, count, width, callback)
+    local height = Kit.px(44)
+    local side, gap = Kit.px(12), Kit.px(4)
+    return Kit.Tappable:new{
+        callback = callback,
+        LeftContainer:new{ dimen = Geom:new{ w = width, h = height },
+            VerticalGroup:new{ align = "left",
+                HorizontalGroup:new{ align = "center",
+                    screen_text("body", name, 17, { bold = true, max_width = width - side - gap }),
+                    HorizontalSpan:new{ width = gap },
+                    Kit.icon("chevron.right", side),
+                },
+                Kit.gap(Kit.px(4)),
+                screen_text("body", tostring(count or "–"), 14, { color = Kit.paper_muted }),
+            },
+        },
     }
 end
 
-local SHELF_ICONS = { all = "book", finished = "check", device = "cloud.down" }
-
---- The shelves of Yandex's, made there by the reader or followed: a list like any other.
-function Library:bookshelvesRow(width)
-    local row = heading_row("Полки", nil, width, Kit.px(SHELF_ROW_H),
-        function() self.on_bookshelves() end, 18, "shelves")
-    self.shelf_rows.bookshelves = row
-    return row
-end
-
-function Library:shelfRow(id, width)
-    local row = heading_row(Shelves.name(id), #Shelves.list(self.item_table, id), width, Kit.px(SHELF_ROW_H),
-        function() self:openShelf(id) end, 18, SHELF_ICONS[id])
-    self.shelf_rows[id] = row
-    return row
-end
-
--- The first screen: the covers as big as there is room for, then the shelves. If the screen
--- is too short for them the list stays, as it leads to the same books.
 function Library:homeBody(width, area)
     local body = VerticalGroup:new{ align = "left" }
-    local reading = Shelves.list(self.item_table, "reading")
-    table.remove(reading, 1) -- that one is in the dock
-    local want = Shelves.list(self.item_table, "want")
-    local heading_h, label_h = Kit.px(STRIP_HEADING_H), Kit.px(STRIP_LABEL_H)
-    local free = area - 4 * Kit.px(SHELF_ROW_H) - Kit.px(8)
-    local show_reading, show_want = #reading > 0, #want > 0
-    local cover_h = 0
-    while show_reading or show_want do
-        local strips = (show_reading and 1 or 0) + (show_want and 1 or 0)
-        cover_h = math.floor((free - strips * heading_h - (show_reading and label_h or 0)) / strips)
-        if cover_h >= Kit.px(SMALLEST_COVER_H) then break end
-        if show_want then show_want = false else show_reading = false end
+    local gap = Kit.px(12)
+    local free = area - 2 * Kit.px(44) - gap
+    local strips = {}
+    for _, id in ipairs { "reading", "want" } do
+        local books = Shelves.list(self.item_table, id)
+        local count = #books
+        if id == "reading" then table.remove(books, 1) end -- the latest is in the dock
+        if count > 0 then
+            strips[#strips + 1] = { id = id, books = books, count = count }
+            free = free - Kit.px(STRIP_HEADING_H + STRIP_HEADING_GAP) - gap
+            if id == "want" then free = free - Kit.px(CARD_LABEL_H) end
+        end
     end
-    cover_h = math.min(cover_h, Kit.px(BIGGEST_COVER_H))
-    if show_reading then body[#body + 1] = self:strip("reading", reading, width, cover_h, true) end
-    if show_want then body[#body + 1] = self:strip("want", want, width, cover_h) end
-    body[#body + 1] = Kit.gap(Kit.px(8))
-    for _, id in ipairs { "all", "finished", "device" } do
-        body[#body + 1] = self:shelfRow(id, width)
+    if #strips > 0 then free = free - gap end
+    local cover_count = 0
+    for _, strip in ipairs(strips) do
+        if #strip.books > 0 then cover_count = cover_count + 1 end
     end
-    body[#body + 1] = self:bookshelvesRow(width)
+    local columns = 5
+    local cover_gap = Kit.px(15)
+    local cover_w = cover_columns(width, columns, cover_gap)
+    local max_height = math.min(math.floor(cover_w * 1.5), math.floor(free / math.max(1, cover_count)))
+    for _, strip in ipairs(strips) do
+        local open = function() self:openShelf(strip.id) end
+        local group = VerticalGroup:new{ align = "left",
+            strip_heading(Shelves.name(strip.id), strip.count, width, open),
+        }
+        if #strip.books > 0 and max_height >= Kit.px(45) then
+            local mode = strip.id == "reading" and "reading" or "details"
+            local row = self:coverRow(strip.books, width, max_height, columns, mode, nil, cover_gap)
+            self.strips[strip.id] = row
+            group[2] = Kit.gap(Kit.px(STRIP_HEADING_GAP))
+            group[3] = row
+        end
+        body[#body + 1] = Kit.Tappable:new{ callback = open, group }
+        body[#body + 1] = Kit.gap(gap)
+    end
+    if #strips > 0 then body[#body + 1] = Kit.gap(Kit.px(12)) end
+    local left = math.floor(width / 2)
+    local function link(id, w)
+        local row
+        if id == "bookshelves" then
+            row = quick_link("Полки", nil, w, function() self.on_bookshelves() end)
+        else
+            row = quick_link(Shelves.name(id), #Shelves.list(self.item_table, id), w,
+                function() self:openShelf(id) end)
+        end
+        self.shelf_rows[id] = row
+        return row
+    end
+    body[#body + 1] = HorizontalGroup:new{ link("all", left), link("finished", width - left) }
+    body[#body + 1] = Kit.gap(gap)
+    body[#body + 1] = HorizontalGroup:new{ link("device", left), link("bookshelves", width - left) }
     return body
 end
 
---- Yandex's recommendations: a few sections to a page, each with as many covers as fit.
+--- Yandex's recommendations: a few sections to a page, each with a cover preview.
 function Library:feedBody(width, area)
     local state = self.feed
     local sections = state.sections
     self.total_pages = math.max(1, math.ceil(#sections / FEED_SECTIONS))
-    -- A page to go on to, when what is on it is still to come.
     if #sections > 0 and not state.finished then self.total_pages = self.total_pages + 1 end
     self.page = math.max(1, math.min(self.page, self.total_pages))
     local cell = math.floor(area / FEED_SECTIONS)
-    local heading_h = Kit.px(STRIP_HEADING_H)
-    local cover_h = math.min(Kit.px(BIGGEST_COVER_H), cell - heading_h - Kit.px(10))
+    local heading_h = Kit.px(STRIP_HEADING_H + STRIP_HEADING_GAP)
+    local gap = Kit.px(16)
+    local columns = 6
+    local cover_w = cover_columns(width, columns, gap)
+    local cover_h = math.max(1, math.min(math.floor(cover_w * 1.5), cell - heading_h - Kit.px(12)))
     local body = VerticalGroup:new{ align = "left" }
     self.feed_sections, self.feed_strips = {}, {}
     local start = (self.page - 1) * FEED_SECTIONS + 1
     for i = start, math.min(#sections, start + FEED_SECTIONS - 1) do
         local section = sections[i]
-        local heading = heading_row(section.name, #section.items, width, heading_h,
-            function() self:openSection(section) end, 20)
-        local row = self:coverRow(section.items, width, cover_h)
+        local open = function() self:openSection(section) end
+        local heading = strip_heading(section.name, #section.items, width, open)
+        local row = self:coverRow(section.items, width, cover_h, columns, "preview", nil, gap)
         self.feed_sections[#self.feed_sections + 1] = heading
         self.feed_strips[#self.feed_strips + 1] = row
-        body[#body + 1] = VerticalGroup:new{ align = "left", heading, row, Kit.gap(Kit.px(10)) }
+        body[#body + 1] = Kit.Tappable:new{ callback = open,
+            VerticalGroup:new{ align = "left",
+                heading, Kit.gap(Kit.px(STRIP_HEADING_GAP)), row,
+                Kit.gap(math.max(0, cell - heading_h - row:getSize().h)),
+            },
+        }
     end
     self.retry_button = nil
     if #body == 0 then
@@ -455,6 +528,68 @@ function Library:feedBody(width, area)
         end
     end
     return body
+end
+
+function Library:sectionBody(width, area)
+    local books = self.section.items
+    local columns, gap = 4, Kit.px(GRID_GAP)
+    local cover_w = cover_columns(width, columns, gap)
+    local rows = area >= 2 * Kit.px(CARD_LABEL_H + 52) + Kit.px(20) and 2 or 1
+    local cover_h = math.max(1, math.min(math.floor(cover_w * 1.34),
+        math.floor((area - (rows - 1) * Kit.px(20)) / rows) - Kit.px(CARD_LABEL_H)))
+    local per_page = rows * columns
+    self.shown = #books
+    self.total_pages = math.max(1, math.ceil(#books / per_page))
+    self.page = math.max(1, math.min(self.page, self.total_pages))
+    local body = VerticalGroup:new{ align = "left" }
+    local first = (self.page - 1) * per_page + 1
+    for n = 0, rows - 1 do
+        local start = first + n * columns
+        if start > #books then break end
+        if n > 0 then body[#body + 1] = Kit.gap(Kit.px(20)) end
+        body[#body + 1] = self:coverRow(books, width, cover_h, columns, "details", start, gap)
+    end
+    return body
+end
+
+local function page_arrow(icon, width, height, action)
+    local image = Kit.icon(icon, Kit.px(24), { alpha = true })
+    if not action then
+        return Kit.rounded(image, width, height)
+    end
+    return Kit.round_button(image, width, height, action)
+end
+
+function Library:sectionPager(width, height)
+    local pill_h = Kit.px(56)
+    local pill_w = math.min(Kit.px(120), math.floor(width / 4))
+    local first_w = math.min(pill_h, math.floor(width / 8))
+    local offset = math.min(Kit.px(10), math.floor(width / 20))
+    local arrow_x = first_w + offset
+    local box = Geom:new{ w = width, h = height }
+    self.prev_button = page_arrow("chevron.left", pill_w, pill_h,
+        self.page > 1 and function() self:turn(-1) end or nil)
+    self.next_button = page_arrow("chevron.right", pill_w, pill_h,
+        self.page < self.total_pages and function() self:turn(1) end or nil)
+    local row = OverlapGroup:new{
+        dimen = box:copy(),
+        allow_mirroring = false,
+        CenterContainer:new{ dimen = box:copy(), screen_text("number", tostring(self.page), 36) },
+    }
+    local function at(w, x, widget)
+        return CenterContainer:new{ dimen = Geom:new{ w = w, h = height }, overlap_offset = { x, 0 }, widget }
+    end
+    row[2] = at(pill_w, arrow_x, self.prev_button)
+    row[3] = at(pill_w, width - arrow_x - pill_w, self.next_button)
+    self.first_button = nil
+    if self.page > 1 then
+        self.first_button = Kit.round_button(HorizontalGroup:new{ align = "center",
+            Kit.icon("chevron.left", Kit.px(18), { alpha = true }),
+            Kit.icon("chevron.left", Kit.px(18), { alpha = true }),
+        }, first_w, pill_h, function() self:turn(1 - self.page) end)
+        row[4] = at(first_w, 0, self.first_button)
+    end
+    return row
 end
 
 --- A box to tap for typing (see SearchBox), and a way to drop what was searched for.
@@ -496,8 +631,7 @@ function Library:searchBar(width)
 end
 
 function Library:listBody(width, area)
-    local section = self.view == "feed_section"
-    local books = section and self.section.items or Shelves.list(self.item_table, self.view, self.query)
+    local books = Shelves.list(self.item_table, self.view, self.query)
     self.shown = #books
     local row_h = Kit.px(ROW_H)
     local per_page = math.max(1, math.floor(area / row_h))
@@ -562,40 +696,37 @@ function Library:catalogueBody(width, area, state)
 end
 
 function Library:build()
-    local W, H = Screen:getWidth(), Screen:getHeight()
-    local pad = Kit.px(16)
-    local inner = W - 2 * pad
-    local row_h, footer_h = Kit.px(HEADER_H), Kit.px(FOOTER_H)
-    local header_h = Status.height() + row_h
-    local items = self.item_table or {}
-    self.item_table = items
-    local side = Kit.px(56)
+    local W, H = self.dimen.w, self.dimen.h
     local view = self.view
-    local home, in_feed = view == "home", view == "feed"
-    local top_level = home or in_feed or view == "catalogue"
+    local home, in_feed, in_search = view == "home", view == "feed", view == "catalogue"
+    local section = view == "feed_section"
+    local top_level = home or in_feed or in_search
+    local redesigned = top_level or section
+    local pad = Kit.px(redesigned and 20 or 16)
+    local inner = W - 2 * pad
+    local row_h = Kit.px(redesigned and DESIGN_HEADER_H or HEADER_H)
+    local footer_h = Kit.px((in_feed or section) and DESIGN_PAGER_H or FOOTER_H)
+    local header_h = Status.height() + row_h
+    self.item_table = self.item_table or {}
     self.rows, self.strips, self.shelf_rows = {}, {}, {}
     self.row_buttons = {}
     self.owned = nil
     self.feed_sections, self.feed_strips = nil, nil
+    self.search_bar, self.clear_button, self.retry_button = nil, nil, nil
     self.total_pages = 1
-    self.dock_widget, self.dock_item = nil, nil
 
     local tab_bar
-    tab_bar, self.tab_cells = Tabs.bar(W, self:currentTab(), function(id) self:selectTab(id) end)
+    tab_bar, self.tab_cells, self.dock_widget, self.dock_item = self:bottomBar(
+        W, self:currentTab(), function(id) self:selectTab(id) end)
     local bottom_h = Tabs.height()
-    -- Typing a search is no time to go back to a book, and there is no room on the screen.
-    local reading = not self.on_sign_in and view ~= "catalogue" and view ~= "collection"
-        and Shelves.list(items, "reading")[1]
-    local dock = reading and self:dock(reading, W)
-    if dock then bottom_h = bottom_h + dock:getSize().h end
-
-    local body
-    local search_bar
-    local body_top = header_h + Kit.px(1)
+    self.search_top = header_h + Kit.px(1)
+    self.search_pad = pad
+    local body_top = self.search_top
     local free = H - body_top - bottom_h
+    local body, search_bar
     if self.on_sign_in then
         body = Kit.button(Kit.text("Войти в Яндекс", 22, { bold = true }), inner, free, self.on_sign_in)
-    elseif view == "catalogue" then
+    elseif in_search then
         search_bar = self:searchBar(inner)
         body_top = body_top + Kit.px(SEARCH_H)
         body = self:catalogueBody(inner, H - body_top - bottom_h - footer_h, self.catalogue)
@@ -603,12 +734,14 @@ function Library:build()
         body = self:catalogueBody(inner, free - footer_h, self.collection)
     elseif in_feed then
         body = self:feedBody(inner, free - footer_h)
-    elseif view == "feed_section" then
-        body = self:listBody(inner, free - footer_h)
-    elseif #items == 0 then
+    elseif section then
+        body_top = body_top + Kit.px(12)
+        body = self:sectionBody(inner, H - body_top - bottom_h - footer_h)
+    elseif #self.item_table == 0 then
         body = CenterContainer:new{
             dimen = Geom:new{ w = inner, h = free },
-            Kit.text(self.message or "Загружаю библиотеку…", 18, { color = Blitbuffer.COLOR_DARK_GRAY, max_width = inner }),
+            Kit.text(self.message or "Загружаю библиотеку…", 18,
+                { color = Blitbuffer.COLOR_DARK_GRAY, max_width = inner }),
         }
     elseif home then
         body = self:homeBody(inner, free)
@@ -618,47 +751,63 @@ function Library:build()
         body = self:listBody(inner, H - body_top - bottom_h - footer_h)
     end
 
-    self.back_button = nil
+    self.back_button, self.search_button, self.upload_button, self.sync_button, self.shelf_button = nil, nil, nil, nil, nil
     local header_row
     local box = Geom:new{ w = W, h = row_h }
+    local side = Kit.px(56)
+    local icon_side = Kit.px(24)
     if top_level then
-        -- As in the phone app: a large name at the left, and no way back to go by accident.
-        local title = home and "Мои книги" or in_feed and "Яндекс Книги" or "Поиск"
+        local title = home and "Ваша библиотека" or in_feed and "Яндекс Книги" or "Поиск"
+        local actions = HorizontalGroup:new{ align = "center" }
+        if not self.on_sign_in then
+            local gap = Kit.px(8)
+            if home then
+                local sync_icon = self.sync_state == "busy" and "wait"
+                    or self.sync_state == "failed" and "cloud.off" or nil
+                if sync_icon then
+                    self.sync_button = Kit.round_button(Kit.icon(sync_icon, icon_side, { alpha = true }),
+                        side, side, function()
+                            if self.sync_state == "failed" then self:refresh() end
+                        end)
+                    actions[1] = self.sync_button
+                    actions[2] = HorizontalSpan:new{ width = gap }
+                end
+                if self.on_upload then
+                    self.upload_button = Kit.round_button(Kit.icon("plus", icon_side, { alpha = true }),
+                        side, side, self.on_upload)
+                    actions[#actions + 1] = self.upload_button
+                    actions[#actions + 1] = HorizontalSpan:new{ width = gap }
+                end
+            end
+            self.search_button = Kit.round_button(Kit.icon("tab.search", icon_side, { alpha = true }), side, side,
+                function() self:openSearch() end, in_search)
+            actions[#actions + 1] = self.search_button
+        end
+        actions[#actions + 1] = HorizontalSpan:new{ width = pad }
         header_row = OverlapGroup:new{
             dimen = box:copy(),
             allow_mirroring = false,
             LeftContainer:new{ dimen = box:copy(),
                 HorizontalGroup:new{ align = "center",
                     HorizontalSpan:new{ width = pad },
-                    Kit.text(title, 28, { bold = true, max_width = W - 2 * pad - side }),
+                    screen_text("heading", title, 38, { max_width = W - actions:getSize().w - pad - Kit.px(8) }),
                 },
             },
+            RightContainer:new{ dimen = box:copy(), actions },
         }
-        self.upload_button, self.sync_button = nil, nil
-        if home and not self.on_sign_in then
-            -- The library syncs by itself, on opening and on waking, and on a swipe down; the
-            -- header says only that it is at it, or that the last time it could not.
-            local buttons = HorizontalGroup:new{ align = "center" }
-            local sync_icon = self.sync_state == "busy" and "wait"
-                or self.sync_state == "failed" and "cloud.off" or nil
-            if sync_icon then
-                self.sync_button = Kit.icon_button(sync_icon, side, function()
-                    if self.sync_state == "failed" then self:refresh() end
-                end, { dim = sync_icon == "wait" })
-                buttons[#buttons + 1] = Kit.fixed(self.sync_button, side)
-            end
-            -- A book of one's own from the device, as the phone's "Загрузить".
-            if self.on_upload then
-                self.upload_button = Kit.icon_button("plus", side, function() self.on_upload() end,
-                    { edge = "right", margin = pad })
-                buttons[#buttons + 1] = self.upload_button
-            end
-            if #buttons > 0 then header_row[2] = RightContainer:new{ dimen = box:copy(), buttons } end
-        end
+    elseif section then
+        self.back_button = Kit.round_button(Kit.icon("chevron.left", icon_side, { alpha = true }), side, side,
+            function() self:goBack() end)
+        header_row = OverlapGroup:new{
+            dimen = box:copy(),
+            allow_mirroring = false,
+            CenterContainer:new{ dimen = box:copy(),
+                screen_text("heading", self.section.name, 38, { max_width = W - 2 * (side + pad + Kit.px(8)) }) },
+            CenterContainer:new{ dimen = Geom:new{ w = side, h = row_h }, overlap_offset = { pad, 0 }, self.back_button },
+        }
     else
         self.back_button = Kit.icon_button("chevron.left", side, function() self:goBack() end, { edge = "left", margin = pad })
         local title = view == "collection" and self.collection.title
-            or view == "feed_section" and self.section.name
             or ("%s · %d"):format(Shelves.name(view), self.shown or 0)
         header_row = HorizontalGroup:new{ align = "center",
             Kit.fixed(self.back_button, side),
@@ -667,7 +816,6 @@ function Library:build()
                 Kit.text(title, 20, { bold = true, max_width = W - 2 * side }),
             },
         }
-        self.shelf_button = nil
         local list = view == "collection" and self.collection
         if list and list.kind == "bookshelves" then
             self.shelf_button = Kit.icon_button("plus", side, function() self.on_new_shelf() end,
@@ -679,11 +827,7 @@ function Library:build()
         if self.shelf_button then header_row[3] = Kit.fixed(self.shelf_button, side) end
     end
     local header = VerticalGroup:new{ align = "left", overlap_offset = { 0, 0 }, Status:new{ width = W }, header_row }
-    if not top_level then header[3] = Kit.line(W) end
-
-    local pager
-    pager, self.prev_button, self.next_button = Kit.pager(self.page, self.total_pages, inner, footer_h,
-        function(delta) self:turn(delta) end)
+    if not redesigned then header[3] = Kit.line(W) end
 
     local frame = OverlapGroup:new{
         dimen = self.dimen:copy(),
@@ -693,26 +837,25 @@ function Library:build()
     }
     if search_bar then
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
-            overlap_offset = { pad, header_h + Kit.px(1) }, search_bar }
+            overlap_offset = { pad, self.search_top }, search_bar }
     end
+    self.prev_button, self.next_button, self.first_button = nil, nil, nil
     if self.total_pages > 1 then
+        local pager
+        if in_feed or section then
+            pager = self:sectionPager(inner, footer_h)
+        else
+            pager, self.prev_button, self.next_button = Kit.pager(self.page, self.total_pages, inner, footer_h,
+                function(delta) self:turn(delta) end)
+        end
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
             overlap_offset = { pad, H - bottom_h - footer_h }, pager }
     end
-    if dock then
-        frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
-            overlap_offset = { 0, H - bottom_h }, dock }
-    end
     frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
-        overlap_offset = { 0, H - Tabs.height() }, tab_bar }
+        overlap_offset = { 0, H - bottom_h }, tab_bar }
     -- Covers take memory until freed, and a long session turns many pages.
     if self[1] then self[1]:free() end
-    self[1] = FrameContainer:new{
-        background = Blitbuffer.COLOR_WHITE,
-        bordersize = 0,
-        padding = 0,
-        frame,
-    }
+    self[1] = FrameContainer:new{ background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, frame }
     if in_feed then self.feed_page = self.page end
     local place = self.place
     place.view, place.query, place.page = self.view, self.query, self.page
@@ -735,8 +878,6 @@ function Library:selectTab(id)
         self.on_settings()
     elseif id == "feed" then
         self:openFeed()
-    elseif id == "search" then
-        self:openSearch()
     else
         self:goHome()
     end
@@ -752,15 +893,18 @@ function Library:openFeed()
     if first_time then self.on_covers(Feed.cards(self.feed.sections, Feed.ROW_COVERS)) end
 end
 
---- What was found last is still there; a tap on the tab while in it starts typing.
+--- Keep any previous query and open the keyboard from the top-level search button.
 function Library:openSearch()
-    if self.on_sign_in then return self:show("catalogue") end
-    if self.view == "catalogue" then return self:showSearch() end
-    if self.catalogue then return self:show("catalogue", self.catalogue.query) end
-    self:search("")
+    if self.on_sign_in then return end
+    if self.view ~= "catalogue" then
+        self.catalogue = self.catalogue or Catalogue.new(nil)
+        self.place.catalogue = self.catalogue
+        self:show("catalogue", self.catalogue.query)
+    end
+    self:showSearch()
 end
 
---- A section of the feed as a list. What is in it is as much as the feed itself sends.
+--- A section of the feed as a paginated cover grid.
 function Library:openSection(section)
     self.section = section
     self:show("feed_section")
@@ -876,8 +1020,8 @@ function Library:showSearch()
     self.search_box = SearchBox:new{
         text = self.query or "",
         hint = self.view == "catalogue" and "Поиск по всем книгам" or "Поиск по библиотеке",
-        top = Status.height() + Kit.px(HEADER_H) + Kit.px(1),
-        side = Kit.px(16),
+        top = self.search_top,
+        side = self.search_pad,
         height = Kit.px(44),
         strip_h = Kit.px(SEARCH_H),
         on_find = function(text)

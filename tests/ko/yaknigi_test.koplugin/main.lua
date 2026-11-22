@@ -1978,13 +1978,20 @@ local function test_books_and_memory(settings)
     menu:search("достоевский")
     wait("the results", function() return menu.view == "catalogue" and #menu.rows > 0 end)
     local item
-    for _, row in ipairs(menu.rows) do
-        if not row.in_library and not menu:inLibrary(row) and row.card.book.uuid ~= "found-denied" then
-            item = row
-            break
+    repeat
+        for _, row in ipairs(menu.rows) do
+            if not row.in_library and not menu:inLibrary(row) and row.card.book.uuid ~= "found-denied" then
+                item = row
+                break
+            end
         end
-    end
-    if not item then fail("no book outside the library on the first page") end
+        if item or menu.page >= menu.total_pages then break end
+        local page = menu.page
+        UIManager:forceRePaint()
+        tap_widget(menu.next_button)
+        wait("the next catalogue page", function() return menu.page > page and #menu.rows > 0 end)
+    until item
+    if not item then fail("no book outside the library in the results") end
     -- Found again, with the covers here from the first time.
     for _, row in ipairs(menu.rows) do
         if not row.cover then fail("a cover that is here is not shown: " .. row.title) end
@@ -2606,6 +2613,11 @@ local function script()
     if menu.view ~= "home" then fail("the library does not start at its first screen") end
     if not menu.strips.reading or not menu.strips.want then fail("no covers of the shelves") end
     shot("03-library-home")
+    tap_widget(menu.strips.want[1])
+    wait("book details from the library's cover grid", is_named("YaknigiBookCard"))
+    if not top().owned then fail("a library book is marked as new") end
+    tap_widget(top().back_button)
+    UIManager:forceRePaint()
     tap_widget(menu.shelf_rows.finished)
     if menu.view ~= "finished" or #menu.rows ~= 4 then fail("the finished books: " .. #menu.rows) end
     shot("03d-library-finished")
@@ -2810,11 +2822,12 @@ local function script()
     menu = library_with(21)
     if menu.view ~= "all" or menu.query ~= "номер 0" then fail("the library forgot where it was") end
 
-    -- All of Yandex's books, from their tab. A failure can be tried again.
+    -- All of Yandex's books, from the header. A failure can be tried again.
     menu:goHome()
     UIManager:forceRePaint()
     mock_get("/test/fail_search?n=1")
-    tap_widget(menu.tab_cells.search)
+    if menu.tab_cells.search then fail("search stayed in the bottom navigation") end
+    tap_widget(menu.search_button)
     wait("the catalogue's box", function() return menu.search_box and UIManager:isWidgetShown(menu.search_box) end)
     if menu.search_box.hint ~= "Поиск по всем книгам" then fail("search on its tab: " .. menu.search_box.hint) end
     -- Nothing typed: the button waits for something to look for.
@@ -2950,6 +2963,8 @@ local function script()
     menu.search_box:dismiss()
     UIManager:forceRePaint()
     if menu.back_button then fail("the search tab has a way back") end
+    if not menu.dock_widget then fail("no current book on the search screen") end
+    shot("45-search")
     tap_widget(menu.tab_cells.library)
     if menu.view ~= "home" then fail("the library's tab from the catalogue") end
     -- A shelf still searches only itself.
@@ -3003,6 +3018,17 @@ local function script()
     end)
     UIManager:forceRePaint()
     shot("50-feed")
+    if not menu.dock_widget then fail("no current book on the feed") end
+    tap_widget(menu.feed_strips[1][1])
+    wait("book details from the feed's cover row", is_named("YaknigiBookCard"))
+    tap_widget(top().back_button)
+    UIManager:forceRePaint()
+    tap_widget(menu.search_button)
+    wait("the catalogue box from the feed", function() return menu.view == "catalogue" and menu.search_box end)
+    menu.search_box:dismiss()
+    UIManager:forceRePaint()
+    tap_widget(menu.tab_cells.feed)
+    UIManager:forceRePaint()
     local names = {}
     for _, section in ipairs(menu.feed.sections) do names[#names + 1] = section.name end
     if table.concat(names, ",") ~= "Новинки,Популярное,Классика,Детективы" then
@@ -3014,6 +3040,10 @@ local function script()
     UIManager:forceRePaint()
     if menu.total_pages ~= 3 then fail("the feed's pages: " .. menu.total_pages) end
     shot("51-feed-page-2")
+    tap_widget(menu.first_button)
+    if menu.page ~= 1 then fail("the first-page shortcut did not go to the start") end
+    UIManager:forceRePaint()
+    tap_widget(menu.next_button)
     -- Away and back, the feed is where it was; its tab from itself goes to the start.
     tap_widget(menu.tab_cells.library)
     UIManager:forceRePaint()
@@ -3023,7 +3053,7 @@ local function script()
     tap_widget(menu.tab_cells.feed)
     if menu.page ~= 1 then fail("the feed's tab did not go to its start") end
     UIManager:forceRePaint()
-    -- A section as a list. What is in the library says so.
+    -- A section as a cover grid.
     tap_widget(menu.feed_sections[2])
     if menu.view ~= "feed_section" or menu.section.name ~= "Популярное" then fail("no section") end
     wait("the section's covers", function()
@@ -3089,6 +3119,7 @@ local function script()
     UIManager:forceRePaint()
     local settings = top()
     if settings.name ~= "YaknigiSettings" then fail("no settings from the library") end
+    if not settings.dock_widget then fail("no current book on settings") end
     if not settings.rows.sign_out then fail("no way out of the account in the settings") end
     if not settings.rows.private_notes then fail("no privacy of notes in the account section") end
     shot("46-settings-library")

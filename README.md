@@ -86,6 +86,11 @@ Oranienbaum. Чтобы использовать PP Right Gothic Medium из м�
 `PPRightGothic-Medium.otf` или `PPRightGothic-Medium.ttf` в папку `fonts` в корне Kindle
 и перезапустите клиент.
 
+Заголовки библиотеки и каталога используют PP Right Gothic Compact Dark, а счётчики
+и номера страниц — PP Right Gothic Light, если их файлы есть в той же папке
+(`PPRightGothic-CompactDark.otf` и `PPRightGothic-Light.otf`). Клиент подставляет
+встроенный шрифт, если этих файлов нет.
+
 Не поддерживаются аудиокниги, комиксы и детский режим.
 
 ## Обновления

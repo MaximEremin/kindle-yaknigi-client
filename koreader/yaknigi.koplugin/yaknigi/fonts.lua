@@ -7,6 +7,28 @@ local PREFERRED = { "Noto Serif", "FreeSerif", "Noto Sans", "FreeSans" }
 local NOT_FOR_BOOKS = { "CJK", "Arabic", "Bengali", "Devanagari", "Naskh", "Symbol", "Dingbats", "Mono", "Nerd", "Nimbus" }
 
 local SETTING = "yaknigi_hidden_fonts"
+local UI_FONTS = "../plugins/yaknigi.koplugin/yaknigi/lockscreen-fonts/"
+local SCREEN_FONTS = {
+    heading = { "PPRightGothic-CompactDark.otf", "PPRightGothic-CompactDark.ttf" },
+    number = { "PPRightGothic-Light.otf", "PPRightGothic-Light.ttf" },
+}
+
+function Fonts.screen_face(style, size)
+    local Font = require("ui/font")
+    if style == "body" then
+        return Font:getFace(UI_FONTS .. "Onest-Regular.otf", size) or Font:getFace("cfont", size)
+    end
+    for _, path in ipairs(require("fontlist"):getFontList()) do
+        local name = path:match("([^/]+)$")
+        for _, wanted in ipairs(SCREEN_FONTS[style]) do
+            if name == wanted then
+                local face = Font:getFace(name, size)
+                if face then return face end
+            end
+        end
+    end
+    return Font:getFace(style == "heading" and "tfont" or "cfont", size)
+end
 
 --- Of the faces the engine has, those for books in their order; pure, for the tests.
 function Fonts.order(faces)

@@ -42,6 +42,7 @@ local Settings = InputContainer:extend{
     on_sign_out = nil,
     on_close_app = nil,
     on_tab = nil, -- function(id): as a tab of the library, with the tabs at the bottom
+    bottom_bar = nil,
     storage = nil, -- { measure(done), clear(picks, done) }; what is on the device, from the library
     body_height = nil, -- how much room the list has; the rest of the screen unless given
     all_rows = nil, -- also the rows that this device has no use for
@@ -554,9 +555,10 @@ function Settings:build()
     local header_h = header:getSize().h
     local tabs_h = 0
     local tab_bar
-    if self.on_tab then
+    if self.bottom_bar then
         tabs_h = Tabs.height()
-        tab_bar, self.tab_cells = Tabs.bar(W, "settings", function(id) self:selectTab(id) end)
+        tab_bar, self.tab_cells, self.dock_widget = self.bottom_bar(W,
+            function(id) self:selectTab(id) end, function() self:close() end)
     end
 
     local rows
