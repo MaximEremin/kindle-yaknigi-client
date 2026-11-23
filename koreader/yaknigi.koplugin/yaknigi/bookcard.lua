@@ -133,10 +133,11 @@ function BookCard:hero(width, available)
     actions[1] = self.read_button
     self.add_button = nil
     if self.on_add or self.owned then
-        local icon = self.owned and "check" or "plus"
+        local icon = self.changing_library and "wait" or self.owned and "check" or "plus"
         local widget = Kit.icon(icon, Kit.px(24), { alpha = true })
-        local add = not self.owned and self.on_add
-        self.add_button = add and Kit.round_button(widget, side, side, add) or Kit.rounded(widget, side, side, self.owned)
+        local action = not self.changing_library and (self.owned and self.on_remove or not self.owned and self.on_add)
+        self.add_button = action and Kit.round_button(widget, side, side, action, self.owned)
+            or Kit.rounded(widget, side, side, self.owned)
         actions[2] = HorizontalSpan:new{ width = gap }
         actions[3] = self.add_button
     end
@@ -291,6 +292,15 @@ function BookCard:build()
         place(centered(self.back_button, side, header_h), pad, status_h),
         place(self:pager(inner), pad, pager_top),
     }
+    self.download_button = nil
+    if self.on_download or self.download_status then
+        local status = self.download_status
+        local name = status == "whole" and "cloud.check" or status == "saving" and "wait" or "cloud.down"
+        local icon = Kit.icon(name, Kit.px(24), { alpha = true })
+        local action = not status and not self.changing_library and self.on_download
+        self.download_button = action and Kit.round_button(icon, side, side, action) or Kit.rounded(icon, side, side)
+        frame[#frame + 1] = place(centered(self.download_button, side, header_h), W - pad - side, status_h)
+    end
     if self.page > 1 then
         local title = text("heading", item.title, 38, { max_width = W - 2 * (side + pad + Kit.px(8)) })
         frame[#frame + 1] = place(centered(title, W, header_h), 0, status_h)

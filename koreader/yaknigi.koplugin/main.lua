@@ -104,6 +104,7 @@ local upload_requests = 0
 local updating = false
 -- The books being saved on the device, by book id.
 local saving = {}
+local removing = {}
 
 -- KOReader quits when its last screen closes, which its own Exit and any failure to open
 -- something would do. Only "Закрыть приложение" should end the app: go back to the library.
@@ -322,6 +323,12 @@ local function is_whole(card)
     local state = f:read("*a")
     f:close()
     return state == "whole"
+end
+
+local function download_status(card)
+    local id = card and card.book and card.book.uuid
+    if id and saving[id] then return "saving" end
+    if id and is_whole(card) then return "whole" end
 end
 
 --- What is shown on its own, leaving out the episodes: there can be hundreds.
@@ -548,11 +555,7 @@ function Yaknigi:showLibrary(quiet)
         on_shelf_menu = function(state) self:showShelfMenu(state) end,
         on_add = function(item) self:addFound(item) end,
         on_save = function(item) self:saveFound(item) end,
-        book_status = function(item)
-            local id = item.card and item.card.book and item.card.book.uuid
-            if id and saving[id] then return "saving" end
-            if item.card and is_whole(item.card) then return "whole" end
-        end,
+        book_status = function(item) return download_status(item.card) end,
     }
     self.library = library
     shown_library = library
@@ -784,6 +787,7 @@ function Yaknigi:pollLibrary(tell_failure)
             self.library.sync_state = nil
             if #cards == 0 then self.library.message = "Библиотека пуста. Книги можно найти через поиск." end
             self.library:switchItemTable(nil, self:libraryItems(cards))
+            self:refreshBookCard()
             self:fetchCovers(without_episodes(cards))
         elseif kind == "auth" then
             save_token(nil)
@@ -1133,11 +1137,29 @@ function Yaknigi:pollBookDetails(state, path, pid)
     end)
 end
 
+local function book_card_status(item, card)
+    return card.uuid ~= nil or item.in_library == true, download_status(card),
+        item.adding or removing[card.book.uuid]
+end
+
+function Yaknigi:refreshBookCard()
+    local screen = self.book_screen
+    if not screen then return end
+    local item = screen.source_item
+    local card = self:ownedCard(screen.view_state.uuid) or item.card
+    local owned, status, changing = book_card_status(item, card)
+    if screen.item.card == card and screen.owned == owned and screen.download_status == status
+        and screen.changing_library == changing then return end
+    screen.item.card, screen.owned = card, owned
+    screen.download_status, screen.changing_library = status, changing
+    screen:refresh()
+end
+
 --- Cover grids and the book menu both open this page, even for a book already in the library.
 function Yaknigi:showBookDetails(item, state, on_back)
     local uuid = item.card.book.uuid
     local card = self:ownedCard(uuid) or item.card
-    local owned = card.uuid ~= nil or item.in_library
+    local owned, status, changing = book_card_status(item, card)
     if item.found then book_covers[uuid] = item.card.book.cover end
     local library = self.library or shown_library
     state = state or { uuid = uuid }
@@ -1167,8 +1189,11 @@ function Yaknigi:showBookDetails(item, state, on_back)
     end
     screen = BookCard:new{
         item = info,
+        source_item = item,
         full_cover = full_cover ~= nil,
         owned = owned,
+        download_status = status,
+        changing_library = changing,
         page = state.page or 1,
         offset = state.offset or 0,
         section_screens = state.section_screens,
@@ -1190,17 +1215,13 @@ function Yaknigi:showBookDetails(item, state, on_back)
             leave()
             self:showBookDetails(related_item, nil, reopen)
         end,
-        on_add = not owned and not item.unavailable and function()
-            self:addFound(item, function(new_card)
-                local active = self.book_screen
-                if active and active.view_state == state then
-                    active.owned, active.item.card = true, new_card
-                    active:refresh()
-                end
-            end)
+        on_add = not item.unavailable and function() self:addFound(item, function() end) end,
+        on_remove = function() self:removeFromLibrary(screen.item.card) end,
+        on_download = not item.unavailable and function()
+            self:saveFound(item)
         end,
         on_read = function()
-            if item.adding then return end
+            if screen.changing_library then return end
             local open_card = self:ownedCard(uuid) or (item.card.uuid and item.card)
             if item.unavailable then
                 self:openItem(item)
@@ -1323,6 +1344,7 @@ end
 --- What the library shows, from the list as it now is.
 function Yaknigi:showCards(cards)
     if shown_library then shown_library:switchItemTable(nil, self:libraryItems(cards or read_json(LIBRARY_CACHE) or {})) end
+    self:refreshBookCard()
 end
 
 --- A word at the top of the screen, that goes by itself and does not get in the way.
@@ -1340,6 +1362,7 @@ function Yaknigi:addFound(item, after)
         if item.adding then return end
         item.adding = true
         if shown_library then shown_library:refreshScreen() end
+        self:refreshBookCard()
         add_requests = add_requests + 1
         local path = ADD_RESULT .. add_requests
         local token, uuid, serial = saved_token(), item.card.book.uuid, serial_of_item(item)
@@ -1353,6 +1376,7 @@ function Yaknigi:addFound(item, after)
         if not pid then
             item.adding = nil
             if shown_library then shown_library:refreshScreen() end
+            self:refreshBookCard()
             message(error_text("http"), 3)
             return
         end
@@ -1382,6 +1406,7 @@ function Yaknigi:pollAdd(item, path, pid, after)
             return
         end
         if shown_library then shown_library:refreshScreen() end
+        self:refreshBookCard()
         if kind == "auth" then
             save_token(nil)
             self:showLibrary()
@@ -1484,7 +1509,11 @@ end
 
 --- Takes a book out of the library, in Yandex's as well.
 function Yaknigi:removeFromLibrary(card)
+    local id = card.book.uuid
     NetworkMgr:runWhenOnline(function()
+        if removing[id] then return end
+        removing[id] = true
+        self:refreshBookCard()
         local wait = InfoMessage:new{ text = "Удаляю " .. quoted(card.book.title) .. "…" }
         UIManager:show(wait)
         remove_requests = remove_requests + 1
@@ -1493,20 +1522,34 @@ function Yaknigi:removeFromLibrary(card)
         -- The episodes of a serial have their cards, and go with it.
         local episodes = {}
         for _, mine in ipairs(read_json(LIBRARY_CACHE) or {}) do
-            if mine.book and mine.book.parent_uuid == card.book.uuid then episodes[#episodes + 1] = mine end
+            if mine.book and mine.book.parent_uuid == id then episodes[#episodes + 1] = mine end
         end
         local pid = ffiutil.runInSubProcess(function()
             local api = Api.new(token)
-            local ok, kind = api:remove_card(card.uuid)
+            local uuid, kind = card.uuid
+            if not uuid then
+                -- Search can report that a book is owned before its card reaches the local library.
+                local book
+                book, kind = api:book_details(id)
+                if book and type(book.library_card_uuid) == "string" and book.library_card_uuid ~= "" then
+                    uuid = book.library_card_uuid
+                elseif not book or book.in_library ~= false then
+                    kind = kind or "http"
+                end
+            end
+            local ok = not kind
+            if uuid then ok, kind = api:remove_card(uuid) end
             for _, episode in ipairs(episodes) do
                 if ok then ok, kind = api:remove_card(episode.uuid) end
             end
             api:close()
-            write_json(path, { kind = ok and "ok" or kind or "network" })
+            write_json(path, { kind = ok and "ok" or kind or "network", card_uuid = uuid })
             os.exit(0)
         end)
         if not pid then
             UIManager:close(wait)
+            removing[id] = nil
+            self:refreshBookCard()
             message(error_text("http"), 3)
             return
         end
@@ -1521,6 +1564,7 @@ function Yaknigi:pollRemove(card, episodes, wait, path, pid)
             return
         end
         UIManager:close(wait)
+        removing[card.book.uuid] = nil
         local result = read_json(path) or {}
         os.remove(path)
         local kind = result.kind or "network"
@@ -1529,10 +1573,12 @@ function Yaknigi:pollRemove(card, episodes, wait, path, pid)
             self:showLibrary()
             return
         elseif kind ~= "ok" then
+            self:refreshBookCard()
             message(kind == "network" and error_text(kind) or "Яндекс Книги не дали удалить эту книгу.", 3)
             return
         end
-        local gone = { [card.uuid] = true }
+        local gone = {}
+        if result.card_uuid then gone[result.card_uuid] = true end
         local gone_books = { [card.book.uuid] = true }
         for _, episode in ipairs(episodes) do
             gone[episode.uuid] = true
@@ -1543,21 +1589,22 @@ function Yaknigi:pollRemove(card, episodes, wait, path, pid)
             if not gone[mine.uuid] then cards[#cards + 1] = mine end
         end
         write_json(LIBRARY_CACHE, cards)
-        for _, episode in ipairs(episodes) do self:removeFromDevice(episode) end
-        self:removeFromDevice(card)
         -- Where it was found it can be added again.
-        if shown_library then
-            local function forget(items)
-                for _, item in ipairs(items) do
-                    if item.card and item.card.book and gone_books[item.card.book.uuid] then
-                        Catalogue.mark_removed(item)
-                    end
+        local function forget(items)
+            for _, item in ipairs(items) do
+                if item.card and item.card.book and gone_books[item.card.book.uuid] then
+                    Catalogue.mark_removed(item)
                 end
             end
+        end
+        if self.book_screen then forget({ self.book_screen.source_item }) end
+        if shown_library then
             if shown_library.catalogue then forget(shown_library.catalogue.items) end
             if shown_library.collection then forget(shown_library.collection.items) end
             if shown_library.feed then forget(Feed.items(shown_library.feed)) end
         end
+        for _, episode in ipairs(episodes) do self:removeFromDevice(episode) end
+        self:removeFromDevice(card)
         self:showCards(cards)
         toast(quoted(card.book.title) .. " удалена из библиотеки")
     end)

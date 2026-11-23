@@ -3039,6 +3039,34 @@ local function script()
     end
     shot("50a-book-cover")
 
+    local books = require("datastorage"):getDataDir() .. "/yaknigi/books/"
+    local book_id = card.item.card.book.uuid
+    local lfs = require("libs/libkoreader-lfs")
+    local removed_before = #mock_get("/test/removed").removed
+    if card.owned or not card.download_button or card.download_button.dimen.x < Screen:getWidth() / 2 then
+        fail("the new book has no download action in the top right")
+    end
+    tap_widget(card.download_button)
+    wait("download to start from the book card", function() return card.download_status == "saving" end)
+    wait("download to finish on the book card", function() return card.download_status == "whole" end, 60)
+    if not card.owned or not card.item.card.uuid or not lfs.attributes(books .. book_id .. "/book.epub") then
+        fail("the download did not add the book or save its text")
+    end
+    if card.download_button.callback then fail("a finished download still starts another download") end
+    shot("50aa-book-downloaded")
+
+    local removed_card = card.item.card.uuid
+    tap_widget(card.add_button)
+    wait("the check to remove the book", function() return not card.owned and not card.download_status end)
+    local removed = mock_get("/test/removed").removed
+    if #removed ~= removed_before + 1 or removed[#removed] ~= removed_card
+        or menu:inLibrary(card.source_item) or lfs.attributes(books .. book_id .. "/book.epub") then
+        fail("the check did not remove the book from Yandex and the device")
+    end
+    if not card.add_button.callback or not card.download_button.callback then
+        fail("the add and download actions did not return after removal")
+    end
+
     tap_widget(card.series_button)
     wait("the book's series", function()
         return top() == menu and menu.collection and menu.collection.finished

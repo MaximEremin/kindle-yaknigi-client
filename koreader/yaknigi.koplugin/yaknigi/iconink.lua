@@ -7,6 +7,7 @@ return {
     ["chevron.left"] = { left = 0.2979, right = 0.2979, top = 0.1417, bottom = 0.1417 },
     ["chevron.right"] = { left = 0.2979, right = 0.2979, top = 0.1417, bottom = 0.1417 },
     ["close"] = { left = 0.1625, right = 0.1625, top = 0.1625, bottom = 0.1625 },
+    ["cloud.check"] = { left = 0.0792, right = 0.0792, top = 0.1042, bottom = 0.1417 },
     ["cloud.down"] = { left = 0.0792, right = 0.0792, top = 0.1042, bottom = 0.1000 },
     ["cloud.off"] = { left = 0.0792, right = 0.0792, top = 0.1042, bottom = 0.1208 },
     ["cold"] = { left = 0.1004, right = 0.1004, top = 0.0458, bottom = 0.0458 },
