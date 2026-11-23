@@ -30,38 +30,32 @@ local function readable(path)
     return f ~= nil
 end
 
--- A library's picture: 300 pixels wide is more than a cell has, at a third of the weight of
--- the next size. What the screen shows on its way to sleep is fetched by itself, on opening a book.
-local PREVIEW = ".preview"
+-- Keep older thumbnails available offline while the sharper list covers are downloaded.
+local LIST = ".list"
 -- Most of a picture's time is waiting for the server, so two go at more than twice the speed
 -- of what a screen asks for. More would spend the device's one core on the TLS handshakes.
 local WORKERS = 2
 
---- The same picture at the other size Yandex keeps it in; a url without one stays as it is.
-local function preview_url(url)
-    return (url:gsub("%-%a+(%.%w+%??[^/]*)$", "-small%1"))
-end
-
-local function find_preview(base)
-    for _, ext in ipairs { ".jpg", ".png" } do
-        if readable(base .. PREVIEW .. ext) then return base .. PREVIEW .. ext end
-    end
-end
-
---- Path of the cover of a card, nil until it has arrived. A smaller one from before
--- previews does until its preview comes.
-function Covers.find(root, card)
-    local base = base_path(root, card)
-    if not base then return nil end
-    local preview = find_preview(base)
-    if preview then return preview end
+local function find_image(base)
     for _, ext in ipairs { ".jpg", ".png" } do
         if readable(base .. ext) then return base .. ext end
     end
-    return nil
 end
 
--- The preview, and failing it whatever the card has, without asking for one picture twice.
+--- Path of the list cover, with older cached sizes as a fallback.
+function Covers.find(root, card)
+    local base = base_path(root, card)
+    if not base then return nil end
+    return find_image(base .. LIST) or find_image(base .. ".preview") or find_image(base)
+end
+
+function Covers.is_list_cover(path)
+    return path and path:match("%.list%.%w+$") ~= nil
+end
+
+local ipad_variants = { thumb = true, small = true, large = true, original = true }
+
+-- Prefer the catalogue's tablet-size cover for grids and lists.
 local function cover_urls(card)
     local cover = card.book and card.book.cover
     local urls, seen = {}, {}
@@ -72,10 +66,15 @@ local function cover_urls(card)
         end
     end
     if type(cover) == "table" then
-        local any = cover.small or cover.large
-        if type(any) == "string" then add(preview_url(any)) end
-        add(cover.small)
+        local any = cover.large or cover.url or cover.small
+        if type(any) == "string" then
+            add((any:gsub("%-(%a+)(%.%w+%??[^/]*)$", function(size, suffix)
+                if ipad_variants[size] then return "-ipad" .. suffix end
+            end)))
+        end
         add(cover.large)
+        add(cover.url)
+        add(cover.small)
     end
     return urls
 end
@@ -86,34 +85,34 @@ local BIGGEST_COVER = 6 * 1024 * 1024
 --- Path of the cover for the whole screen, nil until it has arrived.
 function Covers.find_best(root, uuid)
     local base = base_path(root, { book = { uuid = uuid } })
-    if not base then return nil end
-    for _, ext in ipairs { ".jpg", ".png" } do
-        if readable(base .. ".large" .. ext) then return base .. ".large" .. ext end
+    return base and find_image(base .. ".large")
+end
+
+local function download_image(http, base, urls)
+    local temporary = base .. ".tmp"
+    for _, url in ipairs(urls) do
+        local status, body = http:request("GET", url, { ["User-Agent"] = Http.USER_AGENT })
+        local ext = status == 200 and #body <= BIGGEST_COVER and extension(body)
+        if ext then
+            local f = io.open(temporary, "wb")
+            if not f then return end
+            local written = f:write(body)
+            local closed = f:close()
+            if written and closed and os.rename(temporary, base .. ext) then return end
+            os.remove(temporary)
+            return
+        end
     end
-    return nil
 end
 
 --- Downloads the first picture of urls that can be had. Returns the pid, or nil.
 function Covers.fetch_best(root, uuid, urls)
     local base = base_path(root, { book = { uuid = uuid } })
     if not base or #urls == 0 then return nil end
-    base = base .. ".large"
     return ffiutil.runInSubProcess(function()
         pcall(function() ffi.C.nice(10) end)
         local http = Http.new(Net.connect)
-        for _, url in ipairs(urls) do
-            local status, body = http:request("GET", url, { ["User-Agent"] = Http.USER_AGENT })
-            local ext = status == 200 and #body <= BIGGEST_COVER and extension(body)
-            if ext then
-                local f = io.open(base .. ".tmp", "wb")
-                if f then
-                    f:write(body)
-                    f:close()
-                    os.rename(base .. ".tmp", base .. ext)
-                end
-                break
-            end
-        end
+        download_image(http, base .. ".large", urls)
         http:close()
         os.exit(0)
     end)
@@ -125,22 +124,7 @@ local function download(wanted)
         local started = socket.gettime()
         local http = Http.new(Net.connect)
         for _, item in ipairs(wanted) do
-            for _, url in ipairs(item.urls) do
-                local status, body = http:request("GET", url, { ["User-Agent"] = Http.USER_AGENT })
-                local ext = status == 200 and extension(body)
-                if ext then
-                    local f = io.open(item.base .. ".tmp", "wb")
-                    if f then
-                        f:write(body)
-                        f:close()
-                        os.rename(item.base .. ".tmp", item.base .. PREVIEW .. ext)
-                        -- The smaller picture from before previews is of no more use.
-                        os.remove(item.base .. ".jpg")
-                        os.remove(item.base .. ".png")
-                    end
-                    break
-                end
-            end
+            download_image(http, item.base, item.urls)
         end
         http:close()
         logger.info("yaknigi: covers:", #wanted, "in", socket.gettime() - started, "s")
@@ -155,10 +139,10 @@ function Covers.fetch(root, cards)
     local count = 0
     for _, card in ipairs(cards) do
         local base, urls = base_path(root, card), cover_urls(card)
-        if base and #urls > 0 and not find_preview(base) then
+        if base and #urls > 0 and not find_image(base .. LIST) then
             local share = count % WORKERS + 1
             shares[share] = shares[share] or {}
-            table.insert(shares[share], { base = base, urls = urls })
+            table.insert(shares[share], { base = base .. LIST, urls = urls })
             count = count + 1
         end
     end

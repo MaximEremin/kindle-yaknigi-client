@@ -16,7 +16,7 @@ OUT = os.path.join(PLUGIN, "icons")
 INK = os.path.join(PLUGIN, "iconink.lua")
 GRID = 24
 STROKE = "2.2"
-IDLE = {"tab.library", "yandex-books", "tab.search", "tab.settings"}  # the tab bar's unselected look
+IDLE = {"tab.library", "yandex-books", "tab.search", "tab.settings", "chevron.right"}
 IDLE_COLOUR = "#888888"  # KOReader's COLOR_DARK_GRAY, as the idle captions
 FORBIDDEN = ("clip-path", "clipPath", "mask", "filter", "<style", "<image", "<use", "<defs", "transform", "class=")
 

@@ -306,6 +306,13 @@ end
 
 local LIST_PAGE = 50
 
+function Api:book_details(uuid)
+    local data, kind, detail = self:get_json(API_BASE .. "/books/" .. encode(uuid))
+    if not data then return nil, kind, detail end
+    if type(data) ~= "table" or type(data.book) ~= "table" then return nil, "http", "no book" end
+    return drop_nulls(data.book)
+end
+
 --- Whether a series holds books to read. If Yandex does not say, it stays in the results:
 -- better an empty list than a series that cannot be found.
 function Api:series_has_books(uuid)
@@ -317,9 +324,7 @@ function Api:series_has_books(uuid)
     return false
 end
 
---- A page of a list: kind is "series", "author", "serial", "bookshelf" or "bookshelves" (which
--- has no uuid), and the cursor the page's number as text. Returns { books, parts, episodes,
--- bookshelves or series as Yandex gives them, cursor = the next page, empty after the last }.
+--- A page of a list, with the next page number as a cursor or an empty cursor at the end.
 function Api:collection(kind, uuid, cursor)
     local number = tonumber(cursor) or 1
     local paging = "page=" .. number .. "&per_page=" .. LIST_PAGE
@@ -334,11 +339,18 @@ function Api:collection(kind, uuid, cursor)
         url, field = "/series/" .. id .. "/parts?" .. paging, "parts"
     elseif kind == "author" then
         url, field = "/authors/" .. id .. "/books?role=author&" .. paging, "books"
+    elseif kind == "topic" then
+        url, field = "/topics/" .. id .. "/books?" .. paging, "books"
+    elseif kind == "related" then
+        url, field = "/books/" .. id .. "/related?" .. paging, "books"
     else
         url, field = "/books/" .. id .. "/episodes?" .. paging, "episodes"
     end
     local data, failure, detail = self:get_json(API_BASE .. url)
     if not data then return nil, failure, detail end
+    if type(data) ~= "table" or ((kind == "topic" or kind == "related") and type(data[field]) ~= "table") then
+        return nil, "http", "no books"
+    end
     local got = type(data[field]) == "table" and drop_nulls(data[field]) or {}
     local answer = { [field] = got, cursor = #got >= LIST_PAGE and tostring(number + 1) or "" }
     if kind == "bookshelves" and number == 1 then

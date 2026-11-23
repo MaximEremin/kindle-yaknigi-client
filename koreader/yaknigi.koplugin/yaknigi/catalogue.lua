@@ -18,8 +18,7 @@ function Catalogue.new(query)
     return { query = query, items = {}, seen = {}, cursor = "", finished = query == nil }
 end
 
---- The list of a series, an author, a serial, a shelf or of the shelves: kind is "series", "author",
--- "serial", "bookshelf" or "bookshelves".
+--- A catalogue list, such as a series, a genre, the recommendations for a book, or a shelf.
 function Catalogue.collection(kind, uuid, title)
     return { kind = kind, uuid = uuid, title = title, items = {}, seen = {}, cursor = "", finished = false }
 end
@@ -160,6 +159,8 @@ function Catalogue.item(found)
             title = title,
             cover = picture(url),
             authors_objects = persons,
+            topics = book.topics,
+            publisher = book.publisher,
         } },
     }
 end
@@ -189,7 +190,8 @@ end
 
 local function rest_cover(book)
     local cover = book.cover
-    if type(cover) ~= "table" or type(cover.small) ~= "string" then return nil end
+    if type(cover) ~= "table" then return nil end
+    if type(cover.small) ~= "string" and type(cover.large) ~= "string" then return nil end
     return { small = cover.small, large = cover.large }
 end
 
@@ -236,10 +238,50 @@ function Catalogue.rest_book(book)
             cover = rest_cover(book),
             authors_objects = book.authors_objects,
             series_list = book.series_list,
+            publication_date = book.publication_date,
+            publishers = book.publishers,
+            topics = book.topics,
         } },
     }
     if book.can_be_read == false then make_unavailable(item, UNAVAILABLE) end
     return item
+end
+
+--- Fields shown on the book's page. The API's position is zero-based, its label is for readers.
+function Catalogue.book_details(book)
+    local result = { annotation = type(book.annotation) == "string" and book.annotation or nil, topics = {} }
+    local date = book.publication_date
+    local year = type(date) == "string" and date:match("^(%d%d%d%d)[-/.]")
+    local timestamp = tonumber(date)
+    if not year and timestamp and timestamp % 1 == 0 then
+        if timestamp >= 1000 and timestamp <= 9999 then
+            year = tostring(timestamp)
+        elseif timestamp ~= 0 and math.abs(timestamp) < 253402300800 then
+            year = os.date("!%Y", timestamp)
+        end
+    end
+    result.year = year
+    local publisher = names_of(book.publishers)
+    if publisher == "" and type(book.publisher) == "table" then publisher = book.publisher.name end
+    if type(publisher) == "string" and publisher ~= "" then result.publisher = publisher end
+
+    local series = type(book.series_list) == "table" and book.series_list[1]
+    if type(series) == "table" and type(series.uuid) == "string" and type(series.title) == "string" then
+        local position = tonumber(series.position)
+        local label = series.position_label
+        if type(label) ~= "string" or label == "" then label = position and tostring(position + 1) end
+        result.series = { uuid = series.uuid, title = series.title, label = label }
+    end
+
+    local seen = {}
+    for _, topic in ipairs(type(book.topics) == "table" and book.topics or {}) do
+        local title = type(topic) == "table" and (topic.title or topic.name)
+        if type(title) == "string" and title ~= "" and type(topic.uuid) == "string" and not seen[topic.uuid] then
+            result.topics[#result.topics + 1] = { uuid = topic.uuid, title = title }
+            seen[topic.uuid] = true
+        end
+    end
+    return result
 end
 
 --- A part of a series. A book's audio version is a part with the same number and says nothing

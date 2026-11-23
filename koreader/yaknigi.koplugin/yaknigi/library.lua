@@ -21,6 +21,7 @@ local logger = require("logger")
 local Screen = Device.screen
 
 local Catalogue = require("yaknigi/catalogue")
+local Covers = require("yaknigi/covers")
 local Feed = require("yaknigi/feed")
 local Fonts = require("yaknigi/fonts")
 local Kit = require("yaknigi/kit")
@@ -101,23 +102,6 @@ function Library:init()
     self:build()
 end
 
--- How much to scale a picture for it to cover a cell, by file and cell: finding out takes
--- decoding the picture, and a screen is built anew for every cover that arrives.
-local fill_factors = {}
-
---- The factor that makes the picture cover w x h, what stands out being cut off evenly.
-local function fill_factor(file, w, h)
-    local key = table.concat({ file, w, h }, "|")
-    if fill_factors[key] then return fill_factors[key] end
-    local fit = ImageWidget:new{ file = file, width = w, height = h, scale_factor = 0 }
-    local size = fit:getSize() -- it decodes here: a bad file fails here
-    -- A pixel over: the factor is rounded down on the way to a whole number of pixels.
-    local factor = fit:getScaleFactor() * math.max((w + 1) / size.w, (h + 1) / size.h)
-    fit:free()
-    fill_factors[key] = factor
-    return factor
-end
-
 local function plain_cover(item, w, h, translucent_edge)
     if item.cover then
         local ok, image = pcall(function()
@@ -125,18 +109,22 @@ local function plain_cover(item, w, h, translucent_edge)
                 file = item.cover,
                 width = w,
                 height = h,
-                scale_factor = fill_factor(item.cover, w, h),
+                scale_factor = 0,
             }
             widget:getSize()
             return widget
         end)
         if ok then
+            local inner_w, inner_h = image:getCurrentWidth(), image:getCurrentHeight()
+            -- Align the border with the fitted image inside ImageWidget's larger box.
+            image = Kit.Placed:new{ width = inner_w, height = inner_h,
+                dx = math.floor((inner_w - w) / 2), dy = math.floor((inner_h - h) / 2), image }
             return Kit.RoundedPicture:new{
-                inner_w = w,
-                inner_h = h,
+                inner_w = inner_w,
+                inner_h = inner_h,
                 radius = translucent_edge and Kit.px(4) or nil,
                 border_opacity = translucent_edge and 0.18 or nil,
-                CenterContainer:new{ dimen = Geom:new{ w = w, h = h }, image },
+                CenterContainer:new{ dimen = Geom:new{ w = inner_w, h = inner_h }, image },
             }
         end
     end
@@ -156,8 +144,15 @@ end
 
 local function cover_box(item, w, h, translucent_edge)
     local cover = plain_cover(item, w, h, translucent_edge)
-    if item.card and item.card.state == "finished" then return ReadMark.over(cover, w) end
+    if item.card and item.card.state == "finished" then
+        local size = cover:getSize()
+        return ReadMark.over(cover, math.min(size.w, size.h))
+    end
     return cover
+end
+
+local function cover_slot(cover, width, height)
+    return CenterContainer:new{ dimen = Geom:new{ w = width, h = height }, cover }
 end
 
 local function title_box(text, width, size, lines)
@@ -173,6 +168,7 @@ local function title_box(text, width, size, lines)
 end
 
 Library.cover_box = cover_box
+Library.fit_cover = plain_cover
 
 --- The picture at the right of a row, and what a tap on it does. A book of the library has its
 -- menu; a book found is added, then saved, and then has its menu too.
@@ -217,7 +213,7 @@ function Library:row(item, width, height)
         title_box(item.title or item.text, text_w, 19, 2),
     }
     if item.authors and item.authors ~= "" then
-        lines[#lines + 1] = Kit.text(item.authors, 15, { color = Blitbuffer.COLOR_DARK_GRAY, max_width = text_w })
+        lines[#lines + 1] = Kit.text(item.authors, 15, { color = Kit.paper_muted, max_width = text_w })
     end
     local state = {}
     -- A book of the feed may well be in the library.
@@ -228,14 +224,14 @@ function Library:row(item, width, height)
     if item.whole then state[#state + 1] = "скачана" end
     if #state > 0 then
         lines[#lines + 1] = Kit.gap(Kit.px(4))
-        lines[#lines + 1] = Kit.text(table.concat(state, " · "), 15, { color = Blitbuffer.COLOR_DARK_GRAY })
+        lines[#lines + 1] = Kit.text(table.concat(state, " · "), 15, { color = Kit.paper_muted })
     end
     local row = Kit.Tappable:new{
         callback = function() self:onMenuSelect(item) end,
         CenterContainer:new{
             dimen = Geom:new{ w = left_w, h = height },
             HorizontalGroup:new{ align = "center",
-                cover_box(item, cover_w, cover_h),
+                cover_slot(cover_box(item, cover_w, cover_h), cover_w, cover_h),
                 HorizontalSpan:new{ width = gap },
                 Kit.fixed(lines, text_w),
             },
@@ -281,7 +277,7 @@ function Library:bottomBar(width, selected, on_select, on_read)
         title = item.title or item.text,
         author = item.authors,
         percent = percentage(item),
-        cover = function(w, h) return cover_box(item, w, h) end,
+        cover = function(w, h) return cover_slot(cover_box(item, w, h), w, h) end,
         read = function()
             if on_read then on_read() end
             self:onMenuSelect(item)
@@ -292,7 +288,7 @@ function Library:bottomBar(width, selected, on_select, on_read)
 end
 
 -- The count and chevron sit by the name, with the full heading width tappable.
-local function strip_heading(name, count, width, callback)
+function Library.strip_heading(name, count, width, callback)
     local gap = Kit.px(8)
     local number = screen_text("number", tostring(count), 28)
     local icon = Kit.icon("chevron.right", Kit.px(16))
@@ -315,31 +311,13 @@ local function cover_columns(width, count, gap)
     return math.max(1, math.floor((width - (count - 1) * gap) / count))
 end
 
--- Preserve each image's proportions where it fits the row. Crop very tall images in
--- the reserved space so their neighbours can keep the same width and baseline.
-local cover_ratios = {}
-
-local function cover_height(item, width, limit)
-    if not item.cover then return math.min(limit, math.floor(width * 1.45)) end
-    local ratio = cover_ratios[item.cover]
-    if not ratio then
-        local image = ImageWidget:new{ file = item.cover, scale_factor = 1 }
-        local ok = pcall(image.getSize, image)
-        if ok then
-            ratio = image:getOriginalHeight() / image:getOriginalWidth()
-            cover_ratios[item.cover] = ratio
-        end
-        image:free()
-    end
-    return math.max(1, math.min(limit, math.floor(width * (ratio or 1.45) + 0.5)))
-end
-
-local function cover_with_progress(item, width, height)
-    local cover = cover_box(item, width, height, true)
+local function cover_with_progress(item, cover)
+    local size = cover:getSize()
+    local width, height = size.w, size.h
     local badge_w, badge_h = math.min(width, Kit.px(35)), math.min(height, Kit.px(20))
     local text_w, text_h = math.floor(badge_w * 31 / 35), math.floor(badge_h * 16 / 20)
     local label = screen_text("body", percentage(item) .. "%", 11,
-        { color = Blitbuffer.Color8(128), max_width = text_w })
+        { color = Kit.paper_muted, max_width = text_w })
     local badge = OverlapGroup:new{
         dimen = Geom:new{ w = badge_w, h = badge_h },
         overlap_offset = { width - badge_w, height - badge_h },
@@ -377,27 +355,24 @@ local function card_labels(item, width)
     return labels
 end
 
---- Equal-width covers with a shared baseline. Preview rows can omit book labels.
+--- Equal-width columns with a shared cover baseline. Preview rows can omit book labels.
 function Library:coverRow(books, width, max_height, columns, mode, first, gap)
     first, gap = first or 1, gap or Kit.px(GRID_GAP)
     local cover_w = cover_columns(width, columns, gap)
     local row = HorizontalGroup:new{ align = "top" }
-    local heights = {}
     local last = math.min(#books, first + columns - 1)
-    for i = first, last do
-        heights[i] = cover_height(books[i], cover_w, max_height)
-    end
     local labels_h = mode == "details" and Kit.px(CARD_LABEL_H) or 0
     for i = first, last do
         local item = books[i]
-        local h = heights[i]
         -- Each column gets its share of any rounding left over by the division.
         local x = math.floor((i - first) * (width + gap) / columns)
         local previous = math.floor((i - first - 1) * (width + gap) / columns)
         if i > first then row[#row + 1] = HorizontalSpan:new{ width = x - previous - cover_w } end
-        local cover = mode == "reading" and cover_with_progress(item, cover_w, h)
-            or cover_box(item, cover_w, h, true)
-        local cell = VerticalGroup:new{ align = "left", Kit.gap(max_height - h), cover }
+        local height_limit = item.cover and max_height or math.min(max_height, math.floor(cover_w * 1.45 + 0.5))
+        local cover = cover_box(item, cover_w, height_limit, true)
+        if mode == "reading" then cover = cover_with_progress(item, cover) end
+        local h = cover:getSize().h
+        local cell = VerticalGroup:new{ align = "left", Kit.gap(max_height - h), cover_slot(cover, cover_w, h) }
         if labels_h > 0 then
             local labels = card_labels(item, cover_w)
             cell[3] = labels
@@ -427,7 +402,6 @@ local function quick_link(name, count, width, callback)
                     HorizontalSpan:new{ width = gap },
                     Kit.icon("chevron.right", side),
                 },
-                Kit.gap(Kit.px(4)),
                 screen_text("body", tostring(count or "–"), 14, { color = Kit.paper_muted }),
             },
         },
@@ -447,7 +421,6 @@ function Library:homeBody(width, area)
     } do
         strip.books = Shelves.list(self.item_table, strip.id)
         strip.count = #strip.books
-        if strip.id == "reading" then table.remove(strip.books, 1) end -- the latest is in the dock
         if strip.count > 0 then
             strips[#strips + 1] = strip
             free = free - Kit.px(STRIP_HEADING_H) - strip.bottom_gap
@@ -464,7 +437,7 @@ function Library:homeBody(width, area)
     for _, strip in ipairs(strips) do
         local open = function() self:openShelf(strip.id) end
         local group = VerticalGroup:new{ align = "left",
-            strip_heading(Shelves.name(strip.id), strip.count, width, open),
+            Library.strip_heading(Shelves.name(strip.id), strip.count, width, open),
         }
         local max_height = math.floor((strip.ideal or 0) * scale)
         if max_height >= Kit.px(45) then
@@ -517,7 +490,7 @@ function Library:feedBody(width, area)
         if i > start then body[#body + 1] = Kit.gap(section_gap) end
         local section = sections[i]
         local open = function() self:openSection(section) end
-        local heading = strip_heading(section.name, #section.items, width, open)
+        local heading = Library.strip_heading(section.name, #section.items, width, open)
         local row = self:coverRow(section.items, width, cover_h, columns, "preview", nil, gap)
         self.feed_sections[#self.feed_sections + 1] = heading
         self.feed_strips[#self.feed_strips + 1] = row
@@ -546,16 +519,31 @@ function Library:feedBody(width, area)
     return body
 end
 
-function Library:sectionBody(width, area)
-    local books = self.section.items
+local function section_cover_size(width)
     local columns, gap = 4, Kit.px(GRID_GAP)
-    local cover_w = cover_columns(width, columns, gap)
+    return columns, gap, math.floor(cover_columns(width, columns, gap) * 1.34)
+end
+
+--- One row, in the same grid as a catalogue section.
+function Library.relatedRow(books, width, available, on_book_details)
+    local columns, gap, height = section_cover_size(width)
+    local row = { rows = {}, on_book_details = on_book_details }
+    return Library.coverRow(row, books, width, math.max(1, math.min(height, available - Kit.px(CARD_LABEL_H))),
+        columns, "details", 1, gap)
+end
+
+function Library:sectionBody(width, area, related)
+    local books = related and related.items or self.section.items
+    local columns, gap, ideal_h = section_cover_size(width)
     local rows = area >= 2 * Kit.px(CARD_LABEL_H + 52) + Kit.px(20) and 2 or 1
-    local cover_h = math.max(1, math.min(math.floor(cover_w * 1.34),
+    local cover_h = math.max(1, math.min(ideal_h,
         math.floor((area - (rows - 1) * Kit.px(20)) / rows) - Kit.px(CARD_LABEL_H)))
     local per_page = rows * columns
     self.shown = #books
     self.total_pages = math.max(1, math.ceil(#books / per_page))
+    if related and not related.finished and (#books % per_page == 0 or related.failed) then
+        self.total_pages = self.total_pages + 1
+    end
     self.page = math.max(1, math.min(self.page, self.total_pages))
     local body = VerticalGroup:new{ align = "left" }
     local first = (self.page - 1) * per_page + 1
@@ -564,6 +552,18 @@ function Library:sectionBody(width, area)
         if start > #books then break end
         if n > 0 then body[#body + 1] = Kit.gap(Kit.px(20)) end
         body[#body + 1] = self:coverRow(books, width, cover_h, columns, "details", start, gap)
+    end
+    if related and #body == 0 then
+        local box = Geom:new{ w = width, h = math.max(1, area) }
+        if related.failed then
+            self.retry_button = Kit.button(retry_label(related.failed, width), width, box.h, function()
+                self.on_catalogue(related)
+                self:refreshScreen()
+            end)
+            return self.retry_button
+        end
+        return CenterContainer:new{ dimen = box,
+            Kit.text(related.finished and "Список пуст" or "Загружаю…", 18, { color = Blitbuffer.COLOR_DARK_GRAY }) }
     end
     return body
 end
@@ -716,12 +716,14 @@ function Library:build()
     local view = self.view
     local home, in_feed, in_search = view == "home", view == "feed", view == "catalogue"
     local section = view == "feed_section"
+    local related = view == "collection" and self.collection.kind == "related" and self.collection or nil
+    local grid = section or related
     local top_level = home or in_feed or in_search
-    local redesigned = top_level or section
+    local redesigned = top_level or grid
     local pad = Kit.px(redesigned and 20 or 16)
     local inner = W - 2 * pad
     local row_h = Kit.px(redesigned and DESIGN_HEADER_H or HEADER_H)
-    local footer_h = Kit.px((in_feed or section) and DESIGN_PAGER_H or FOOTER_H)
+    local footer_h = Kit.px((in_feed or grid) and DESIGN_PAGER_H or FOOTER_H)
     local header_h = Status.height() + row_h
     self.item_table = self.item_table or {}
     self.rows, self.strips, self.shelf_rows = {}, {}, {}
@@ -746,13 +748,13 @@ function Library:build()
         search_bar = self:searchBar(inner)
         body_top = body_top + Kit.px(SEARCH_H)
         body = self:catalogueBody(inner, H - body_top - bottom_h - footer_h, self.catalogue)
+    elseif grid then
+        body_top = body_top + Kit.px(12)
+        body = self:sectionBody(inner, H - body_top - bottom_h - footer_h, related)
     elseif view == "collection" then
         body = self:catalogueBody(inner, free - footer_h, self.collection)
     elseif in_feed then
         body = self:feedBody(inner, free - footer_h)
-    elseif section then
-        body_top = body_top + Kit.px(12)
-        body = self:sectionBody(inner, H - body_top - bottom_h - footer_h)
     elseif #self.item_table == 0 then
         body = CenterContainer:new{
             dimen = Geom:new{ w = inner, h = free },
@@ -811,14 +813,15 @@ function Library:build()
             },
             RightContainer:new{ dimen = box:copy(), actions },
         }
-    elseif section then
+    elseif grid then
         self.back_button = Kit.round_button(Kit.icon("chevron.left", icon_side, { alpha = true }), side, side,
             function() self:goBack() end)
         header_row = OverlapGroup:new{
             dimen = box:copy(),
             allow_mirroring = false,
             CenterContainer:new{ dimen = box:copy(),
-                screen_text("heading", self.section.name, 38, { max_width = W - 2 * (side + pad + Kit.px(8)) }) },
+                screen_text("heading", related and related.title or self.section.name, 38,
+                    { max_width = W - 2 * (side + pad + Kit.px(8)) }) },
             CenterContainer:new{ dimen = Geom:new{ w = side, h = row_h }, overlap_offset = { pad, 0 }, self.back_button },
         }
     else
@@ -858,7 +861,7 @@ function Library:build()
     self.prev_button, self.next_button, self.first_button = nil, nil, nil
     if self.total_pages > 1 then
         local pager
-        if in_feed or section then
+        if in_feed or grid then
             pager = self:sectionPager(inner, footer_h)
         else
             pager, self.prev_button, self.next_button = Kit.pager(self.page, self.total_pages, inner, footer_h,
@@ -928,10 +931,12 @@ function Library:openSection(section)
 end
 
 --- A series, an author or a serial, on a screen of its own. Back leads to where it was opened from.
-function Library:openCollection(state)
-    table.insert(self.trail, { view = self.view, query = self.query, page = self.page, collection = self.collection })
+function Library:openCollection(state, on_back)
+    table.insert(self.trail, { view = self.view, query = self.query, page = self.page,
+        collection = self.collection, on_back = on_back })
     self.collection = state
     self:show("collection")
+    if state.kind == "related" and #self.rows > 0 then self.on_covers(Catalogue.cards(self.rows)) end
 end
 
 --- The shelf on the screen, if it is one's own.
@@ -963,6 +968,7 @@ function Library:goBack()
         local back = table.remove(self.trail) or { view = "home" }
         self.collection = back.collection
         self:show(back.view, back.query, back.page)
+        if back.on_back then back.on_back() end
     elseif self.view == "feed_section" then
         self.section = nil
         self:show("feed", nil, self.feed_page)
@@ -1081,7 +1087,7 @@ function Library:turn(delta)
     -- This page's covers before those of the pages not being looked at.
     local missing = {}
     for _, item in ipairs(self.rows or {}) do
-        if item.card and not item.cover then missing[#missing + 1] = item.card end
+        if item.card and not Covers.is_list_cover(item.cover) then missing[#missing + 1] = item.card end
     end
     if #missing > 0 then self.on_covers(missing) end
 end

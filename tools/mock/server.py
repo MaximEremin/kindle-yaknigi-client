@@ -95,9 +95,8 @@ SEARCH_TYPES = ["TEXTBOOK", "SERIAL", "SERIES", "AUTHOR"]
 SERIALS = {"serial-1": ("Сериал", 4), "serial-2": ("Новый сериал", 2)}
 
 
-def cover_png(n):
-    """A small greyscale image, a different shade per book."""
-    w, h = 90, 135
+def cover_png(n, w=90, h=135):
+    """A greyscale image, a different shade per book."""
     shade = 60 + (n * 37) % 160
     rows = b"".join(b"\0" + bytes([shade if 8 < y < h - 8 else 0] * w) for y in range(h))
     def chunk(kind, data):
@@ -314,8 +313,9 @@ class Handler(BaseHTTPRequestHandler):
             spine, start = position["start"].split("!")
             card["cfi"] = f'{spine}!,{start},{position["end"].split("!")[1]}'
 
-    def cover(self, n):
-        return f"http://127.0.0.1:{self.server.server_address[1]}/cover/{n}.png"
+    def cover(self, n, size=None):
+        name = f"{n}-{size}" if size else str(n)
+        return f"http://127.0.0.1:{self.server.server_address[1]}/cover/{name}.png"
 
     def serial_book(self, uuid):
         title, episodes = SERIALS[uuid]
@@ -355,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
                 "annotation": f"Аннотация книги {i}.", "can_be_read": True, "source_type": "html",
                 "cover": {"small": self.cover(100 + i), "large": self.cover(100 + i)},
                 "in_library": uuid in self.server.added, "library_card": None}
+        if i in (5, 20):
+            book["cover"] = {"small": self.cover(100 + i, "thumb"), "large": self.cover(100 + i, "large")}
         if i == 20:
             book["series_list"] = [{"position": 1, "position_label": "1", "uuid": "series-1", "title": "Подборка"}]
         return book
@@ -543,7 +545,7 @@ class Handler(BaseHTTPRequestHandler):
                 "name": "Книга номер 5" if i == 0 else f"Найденная книга {i}",
                 "authors": [{"name": f"Автор {i}", "uuid": f"a{i}"}],
                 "annotation": None if i == 4 else f"Аннотация книги {i}. " + PARAGRAPH * 8,
-                "cover": {"url": f"http://127.0.0.1:{self.server.server_address[1]}/cover/{100 + i}.png", "ratio": 0.7},
+                "cover": {"url": self.cover(100 + i, "thumb" if i in (5, 20) else None), "ratio": 0.7},
             },
             "availability": {"subscriptions": {"types": ["plus"]}},
             "progress": {"inLibrary": uuid == "book5" or uuid == "found-on-phone" or uuid in self.server.added,
@@ -976,6 +978,14 @@ class Handler(BaseHTTPRequestHandler):
                      {"position": 3, "position_label": "3", "resource_type": "book", "resource": self.rest_book(21)},
                      {"position": 4, "position_label": "4", "resource_type": "book", "resource": closed}]
             self.reply_json(200, {"parts": parts if first else []})
+        elif url.path.endswith("/series/series-details/parts"):
+            self.reply_json(200, {"parts": [
+                {"position": i, "position_label": str(i + 1), "resource_type": "book",
+                 "resource": self.rest_book(number)} for i, number in enumerate((4, 5))]})
+        elif url.path.endswith("/topics/topic-details/books"):
+            self.reply_json(200, {"books": [self.rest_book(5), self.rest_book(22)]})
+        elif url.path.endswith("/books/found5/related"):
+            self.reply_json(200, {"books": [self.rest_book(i) for i in range(20, 29)]})
         elif url.path.endswith("/authors/author-1/books"):
             if query.get("role") != ["author"]:
                 self.reply(404, b"")
@@ -1026,8 +1036,19 @@ class Handler(BaseHTTPRequestHandler):
             card = {"book5": "card5", "found-on-phone": "card7"}.get(uuid)
             if uuid in self.server.added:
                 card = "added" + uuid.replace("found", "")
-            self.reply_json(200, {"book": {"uuid": uuid, "can_be_read": uuid != "found-denied",
-                                           "in_library": card is not None, "library_card_uuid": card}})
+            book = {"uuid": uuid, "can_be_read": uuid != "found-denied",
+                    "in_library": card is not None, "library_card_uuid": card}
+            if uuid == "found5":
+                book.update(self.rest_book(5), publication_date=1673989200,
+                            publishers=[{"name": "Издательство подборки"}],
+                            series_list=[{"uuid": "series-details", "title": "Цикл испытаний",
+                                          "position": 1, "position_label": "2"}],
+                            topics=[{"uuid": "topic-details", "title": "Приключения"}])
+                book["annotation"] = (
+                    "Аннотация из каталога Яндекс Книг. Гаррету предстоит найти путь домой, "
+                    "пока его спутники ищут украденный ключ. Отряд отправляется в Заграбские леса, "
+                    "где каждый поворот скрывает новую опасность.\n\n") * 7
+            self.reply_json(200, {"book": book})
         elif re.search(r"/profile/library_cards/c-[^/]+$", url.path):
             self.reply_json(200, {"library_card": self.taken_card(url.path.split("/c-")[-1])})
         elif re.search(r"/profile/library_cards/added\d+$", url.path):
@@ -1056,7 +1077,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Auth-Token"):
                 self.reply(400, b"the covers' host must not get the token")
                 return
-            self.reply(200, cover_png(int(url.path.split("/")[-1].split(".")[0])))
+            match = re.fullmatch(r"/cover/(\d+)(?:-(thumb|large|ipad|original))?\.png", url.path)
+            if not match:
+                self.reply(404, b"")
+                return
+            n, size = match.groups()
+            variants = {"large": (174, 240), "ipad": (464, 640), "original": (900, 1240)}
+            if n == "120":
+                variants["ipad"] = (320, 960)
+            self.reply(200, cover_png(int(n), *variants.get(size, (90, 135))))
         elif "serial" in url.path:
             self.reply(404, b"")
         elif re.search(r"/books/ep\d-\d/metadata/v4$", url.path):

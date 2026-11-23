@@ -636,6 +636,8 @@ local rest = Catalogue.rest_book({ uuid = "b1", title = "Книга", authors = 
 eq(rest.authors, "А, Б", "authors as text")
 eq(rest.mandatory, "в библиотеке", "in the library")
 eq(rest.card.book.cover.large, "l", "the cover")
+local large_only = Catalogue.rest_book({ uuid = "b1", cover = { large = "l" } })
+eq(large_only.card.book.cover.large, "l", "a cover with only the large URL")
 eq(Catalogue.rest_book({ uuid = "b2", source_type = "serial", title = "С", episodes_count = 2 }).kind, "serial", "a serial in a list")
 eq(Catalogue.part({ resource_type = "audiobook", position = 1, resource = { uuid = "a" } }, { [1] = true }), nil, "the audio of a book in a series")
 eq(Catalogue.part({ resource_type = "audiobook", position = 2, resource = { uuid = "a" } }, { [1] = true }).mandatory, "только аудио", "a part with only audio")
@@ -668,6 +670,22 @@ local links = Catalogue.links({ series_list = { { uuid = "s", title = "Сери�
 eq(links[1].kind, "series", "a book leads to its series")
 eq(links[2].title, "А", "and to its author")
 eq(#Catalogue.links({ authors = "текстом" }), 0, "nowhere, if nothing is known")
+do
+    local details = Catalogue.book_details({
+        publication_date = 1673989200,
+        publishers = { { name = "Издательство" } },
+        series_list = { { uuid = "s", title = "Серия", position = 1 } },
+        topics = { { uuid = "t1", title = "Проза" }, { uuid = "t1", name = "Дубликат" },
+            { uuid = "t2", name = "Фэнтези" }, { title = "Без ссылки" } },
+    })
+    eq(details.year, "2023", "the edition's year comes from the publication date")
+    eq(details.publisher, "Издательство", "the edition's publisher")
+    eq(details.series.label, "2", "series positions without a label count from one on screen")
+    eq(#details.topics, 2, "only unique topics that lead to a list")
+    eq(details.topics[2].title, "Фэнтези", "topics from search have a name instead of a title")
+    eq(Catalogue.book_details({ owner_catalog_title = "Правообладатель" }).publisher, nil,
+        "the rights holder is not the publisher")
+end
 local list_state = Catalogue.collection("author", "a1", "А")
 eq(list_state.kind, "author", "a list knows what it is")
 eq(list_state.finished, false, "and is to be asked for")

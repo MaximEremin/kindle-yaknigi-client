@@ -60,6 +60,7 @@ local COVERS = ROOT .. "/covers"
 local LIBRARY_CACHE = ROOT .. "/library.json"
 local LIBRARY_RESULT = ROOT .. "/library.result"
 local CATALOGUE_RESULT = ROOT .. "/catalogue.result"
+local BOOK_DETAILS_RESULT = ROOT .. "/book-details.result"
 local FEED_CACHE = ROOT .. "/feed.json"
 local FEED_RESULT = ROOT .. "/feed.result"
 local TAKE_RESULT = ROOT .. "/take.result"
@@ -92,6 +93,7 @@ local library_place = {}
 -- The library on the screen, for answers that arrive after the reader was opened and left.
 local shown_library = nil
 local catalogue_requests = 0
+local book_details_requests = 0
 local feed_requests = 0
 local add_requests = 0
 local remove_requests = 0
@@ -137,6 +139,7 @@ end
 local workers = {}
 -- What is known of a book's cover from the card it was opened by. Keyed by book id.
 local book_covers = {}
+local full_cover_downloads = {}
 
 local Yaknigi = WidgetContainer:extend{
     name = "yaknigi",
@@ -384,6 +387,33 @@ function Yaknigi:reapCovers(pids)
     UIManager:scheduleIn(COVER_POLL_SECONDS, function() self:reapCovers(pids) end)
 end
 
+local function fetch_full_cover(uuid, known, on_ready)
+    local cover = Covers.find_best(COVERS, uuid)
+    if cover then return on_ready(cover) end
+    if not NetworkMgr:isOnline() then return end
+    local waiting = full_cover_downloads[uuid]
+    if waiting then
+        waiting[#waiting + 1] = on_ready
+        return
+    end
+    local pid = Covers.fetch_best(COVERS, uuid, Prefs.sleep_cover_urls(known))
+    if not pid then return end
+    waiting = { on_ready }
+    full_cover_downloads[uuid] = waiting
+    local function poll()
+        if not ffiutil.isSubProcessDone(pid) then
+            UIManager:scheduleIn(COVER_POLL_SECONDS, poll)
+            return
+        end
+        full_cover_downloads[uuid] = nil
+        local arrived = Covers.find_best(COVERS, uuid)
+        if arrived then
+            for _, callback in ipairs(waiting) do callback(arrived) end
+        end
+    end
+    UIManager:scheduleIn(COVER_POLL_SECONDS, poll)
+end
+
 -- Shows covers as they arrive, without touching the screen when none did.
 function Yaknigi:scheduleCoverPoll(pids)
     UIManager:scheduleIn(COVER_POLL_SECONDS, function()
@@ -398,11 +428,11 @@ function Yaknigi:scheduleCoverPoll(pids)
         for _, item in ipairs(library.rows or {}) do shown[item] = true end
         local changed = false
         local function look(item, matters)
-            -- Also a preview in the place of a smaller cover from before.
             local cover = Covers.find(COVERS, item.card)
             if cover and cover ~= item.cover then
                 item.cover = cover
                 if matters then changed = true end
+                return true
             end
         end
         for _, item in ipairs(library.item_table or {}) do
@@ -418,6 +448,15 @@ function Yaknigi:scheduleCoverPoll(pids)
             for _, item in ipairs(Feed.items(library.feed)) do look(item, shown[item]) end
         end
         if changed then library:refreshScreen() end
+        local card = self.book_screen
+        if card and UIManager:isWidgetShown(card) then
+            local redraw = not card.full_cover and look(card.item, false) and card.page == 1
+            for i, item in ipairs(card.related and card.related.items or {}) do
+                if i > 4 then break end
+                redraw = (look(item, false) and card.page == card.page_count) or redraw
+            end
+            if redraw then card:refresh() end
+        end
         if done then
             self.covers_pids, self.covers_queue = nil, nil
         else
@@ -475,6 +514,7 @@ function Yaknigi:showLibrary(quiet)
         })
         return
     end
+    if self.book_screen then UIManager:close(self.book_screen) end
     if self.library then UIManager:close(self.library) end
     if shown_library and shown_library ~= self.library then UIManager:close(shown_library) end
     local signed_in = saved_token() ~= nil
@@ -1006,29 +1046,167 @@ function Yaknigi:openFound(item)
     end
 end
 
+local RELATED_TITLE = "С этой книгой читают"
+
+function Yaknigi:fetchBookCovers(screen)
+    local state = screen.view_state
+    -- The book details can supply a better source than the catalogue entry.
+    if not screen.full_cover and not state.loading then
+        local known = state.details and state.details.cover or screen.item.card.book.cover
+        fetch_full_cover(state.uuid, known, function(cover)
+            local active = self.book_screen
+            if not active or active.view_state.uuid ~= state.uuid then return end
+            active.item.cover, active.full_cover = cover, true
+            if active.page == 1 then active:refresh() end
+        end)
+    end
+    local cards = {}
+    if not screen.full_cover and not Covers.is_list_cover(screen.item.cover) then cards[1] = screen.item.card end
+    for i, item in ipairs(screen.related and screen.related.items or {}) do
+        if i > 4 then break end
+        if not Covers.is_list_cover(item.cover) then cards[#cards + 1] = item.card end
+    end
+    if #cards > 0 then self:fetchCovers(cards) end
+end
+
+local function apply_book_details(item, details)
+    for _, key in ipairs{ "annotation", "year", "publisher", "series", "topics" } do
+        if details[key] ~= nil then item[key] = details[key] end
+    end
+end
+
+--- Fetch the catalogue's current metadata and the first page of related books off the UI thread.
+function Yaknigi:loadBookDetails(card, state)
+    if state.loading or state.loaded or card.book.is_uploaded or not NetworkMgr:isOnline() then return end
+    local token = saved_token()
+    if not token then return end
+    local uuid = card.book.uuid
+    book_details_requests = book_details_requests + 1
+    local path = BOOK_DETAILS_RESULT .. book_details_requests
+    local pid = ffiutil.runInSubProcess(function()
+        local api = Api.new(token)
+        local book = api:book_details(uuid)
+        local related, related_error = api:collection("related", uuid, "")
+        api:close()
+        local details = book and Catalogue.book_details(book)
+        local rest_item = book and Catalogue.rest_book(book)
+        if details and rest_item then details.cover = rest_item.card.book.cover end
+        write_json(path, {
+            details = details,
+            related = related and { items = Catalogue.from_page("related", related), cursor = related.cursor },
+            related_error = related_error,
+        })
+        os.exit(0)
+    end)
+    if pid then
+        state.loading = true
+        self:pollBookDetails(state, path, pid)
+    end
+end
+
+function Yaknigi:pollBookDetails(state, path, pid)
+    UIManager:scheduleIn(0.25, function()
+        if not ffiutil.isSubProcessDone(pid) then
+            self:pollBookDetails(state, path, pid)
+            return
+        end
+        state.loading = false
+        local result = read_json(path) or {}
+        os.remove(path)
+        state.loaded = result.details ~= nil and (result.related ~= nil or result.related_error == "not_found")
+        state.details = result.details or state.details
+        if result.related then
+            local related = Catalogue.collection("related", state.uuid, RELATED_TITLE)
+            local new = Catalogue.add(related, result.related.items, result.related.cursor)
+            for _, item in ipairs(new) do item.cover = Covers.find(COVERS, item.card) end
+            state.related = related
+        end
+        local screen = self.book_screen
+        if not screen or screen.view_state ~= state or not UIManager:isWidgetShown(screen) then return end
+        if result.details then
+            apply_book_details(screen.item, result.details)
+            screen.item.card.book.cover = screen.item.card.book.cover or result.details.cover
+        end
+        screen.related = state.related
+        if result.details or result.related then screen:refresh() end
+        self:fetchBookCovers(screen)
+    end)
+end
+
 --- Cover grids and the book menu both open this page, even for a book already in the library.
-function Yaknigi:showBookDetails(item)
+function Yaknigi:showBookDetails(item, state, on_back)
     local uuid = item.card.book.uuid
     local card = self:ownedCard(uuid) or item.card
-    local owned = card.uuid ~= nil
+    local owned = card.uuid ~= nil or item.in_library
     if item.found then book_covers[uuid] = item.card.book.cover end
     local library = self.library or shown_library
+    state = state or { uuid = uuid }
+    state.section_screens = state.section_screens or {}
+    local full_cover = Covers.find_best(COVERS, uuid)
+    local info = {
+        title = item.title or item.text or card.book.title or "Книга",
+        authors = item.authors,
+        cover = full_cover or Covers.find(COVERS, card) or item.cover,
+        card = card,
+        annotation = item.annotation,
+    }
+    apply_book_details(info, Catalogue.book_details(card.book))
+    if state.details then
+        apply_book_details(info, state.details)
+        card.book.cover = card.book.cover or state.details.cover
+    end
     local screen
     local function close() UIManager:close(screen) end
+    local function reopen()
+        local current = self.library or shown_library
+        if current and UIManager:isWidgetShown(current) then self:showBookDetails(item, state, on_back) end
+    end
+    local function leave()
+        state.page, state.offset = screen.page, screen.offset
+        close()
+    end
     screen = BookCard:new{
-        item = {
-            title = item.title or item.text,
-            authors = item.authors,
-            cover = item.cover or Covers.find(COVERS, card),
-            annotation = item.annotation or card.book.annotation,
-        },
-        owned = owned or item.in_library,
+        item = info,
+        full_cover = full_cover ~= nil,
+        owned = owned,
+        page = state.page or 1,
+        offset = state.offset or 0,
+        section_screens = state.section_screens,
+        related = state.related,
+        view_state = state,
+        on_back = on_back,
+        on_dismiss = function()
+            if self.book_screen == screen then self.book_screen = nil end
+        end,
+        on_link = library and function(kind, id, title)
+            leave()
+            library:openCollection(Catalogue.collection(kind, id, title), reopen)
+        end,
+        on_related = library and function()
+            leave()
+            library:openCollection(state.related, reopen)
+        end,
+        on_book_details = function(related_item)
+            leave()
+            self:showBookDetails(related_item, nil, reopen)
+        end,
+        on_add = not owned and not item.unavailable and function()
+            self:addFound(item, function(new_card)
+                local active = self.book_screen
+                if active and active.view_state == state then
+                    active.owned, active.item.card = true, new_card
+                    active:refresh()
+                end
+            end)
+        end,
         on_read = function()
+            if item.adding then return end
+            local open_card = self:ownedCard(uuid) or (item.card.uuid and item.card)
             if item.unavailable then
                 self:openItem(item)
-            elseif owned then
+            elseif open_card then
                 close()
-                self:openCard(card)
+                self:openCard(open_card)
             else
                 self:takeFound(item, screen)
             end
@@ -1040,7 +1218,10 @@ function Yaknigi:showBookDetails(item)
             end, close)
         end,
     }
+    self.book_screen = screen
     UIManager:show(screen)
+    self:loadBookDetails(card, state)
+    self:fetchBookCovers(screen)
 end
 
 --- Gets the card of a book, from Yandex and into the library if need be. A serial comes with its
@@ -2151,17 +2332,9 @@ function Yaknigi:chooseSleepCover(store)
     if best or not NetworkMgr:isOnline() then return end
     local card = not book_covers[store.id] and cached_card(store.id)
     local known = book_covers[store.id] or card and card.book.cover
-    local pid = Covers.fetch_best(COVERS, store.id, Prefs.sleep_cover_urls(known))
-    if not pid then return end
-    local function wait()
-        if not ffiutil.isSubProcessDone(pid) then
-            UIManager:scheduleIn(POLL_SECONDS, wait)
-            return
-        end
-        local arrived = not self.closed and Covers.find_best(COVERS, store.id)
-        if arrived then Prefs.apply_sleep_screen(arrived) end
-    end
-    UIManager:scheduleIn(POLL_SECONDS, wait)
+    fetch_full_cover(store.id, known, function(arrived)
+        if not self.closed then Prefs.apply_sleep_screen(arrived) end
+    end)
 end
 
 function Yaknigi:onReaderReady()

@@ -24,7 +24,7 @@ local Kit = {}
 
 Kit.paper_gray = Blitbuffer.Color8(234)
 Kit.paper_line = Blitbuffer.Color8(218)
-Kit.paper_muted = Blitbuffer.Color8(119)
+Kit.paper_muted = Blitbuffer.Color8(100)
 
 function Kit.px(n) return Screen:scaleBySize(n) end
 -- Corners of what lies on the page and of what holds a picture.
@@ -294,6 +294,7 @@ function Kit.icon(name, side, opts)
         height = side,
         dim = opts and opts.dim or nil,
         alpha = opts and opts.alpha or false,
+        rotation_angle = opts and opts.rotation_angle or nil,
     }
 end
 

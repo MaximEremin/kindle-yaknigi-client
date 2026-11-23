@@ -2988,9 +2988,7 @@ local function script()
     wait("the library synced", function() return menu.sync_state == nil end)
     local docked = menu.dock_item
     if not docked then fail("nothing in the dock") end
-    for _, item in ipairs(menu.rows) do
-        if item == docked then fail("the docked book is in the strip too") end
-    end
+    if menu.rows[1] ~= docked then fail("the docked book is not first in the reading strip") end
     local docked_id = docked.card.book.uuid
     tap_widget(menu.dock_widget)
     wait("the docked book to open", function()
@@ -3021,6 +3019,82 @@ local function script()
     if not menu.dock_widget then fail("no current book on the feed") end
     tap_widget(menu.feed_strips[1][1])
     wait("book details from the feed's cover row", is_named("YaknigiBookCard"))
+    wait("metadata and recommendations from the catalogue", function()
+        return top().series_button and top().related and top().related.finished
+    end)
+    local card = top()
+    local function cover_width(path)
+        local image = require("ui/widget/imagewidget"):new{ file = path }
+        image:getSize()
+        local width = image:getOriginalWidth()
+        image:free()
+        return width
+    end
+    if not card.dock_widget or not card.add_button or card.item.series.label ~= "2"
+        or card.item.year ~= "2023" or card.item.publisher ~= "Издательство подборки"
+        or #card.related.items ~= 9 then fail("the book card did not receive its catalogue data") end
+    wait("the original cover for the book card", function() return card.full_cover end)
+    if cover_width(card.item.cover) ~= 900 or cover_width(menu.rows[1].cover) ~= 464 then
+        fail("the card or the feed is still showing a low-resolution cover")
+    end
+    shot("50a-book-cover")
+
+    tap_widget(card.series_button)
+    wait("the book's series", function()
+        return top() == menu and menu.collection and menu.collection.finished
+    end)
+    if menu.collection.uuid ~= "series-details" or #menu.rows ~= 2 then fail("the wrong series opened") end
+    tap_widget(menu.back_button)
+    wait("back to the book cover", is_named("YaknigiBookCard"))
+    tap_widget(top().next_button)
+    card = top()
+    if card.page ~= 2 or card.screen_number ~= 2 or card.limit == 0 then fail("the long annotation did not start on screen 2") end
+    shot("50b-book-details")
+    local last_details_screen = 2
+    while card.offset < card.limit do
+        tap_widget(card.next_button)
+        last_details_screen = last_details_screen + 1
+        if card.page ~= 2 or card.screen_number ~= last_details_screen then fail("annotation screens are not numbered consecutively") end
+    end
+    tap_widget(card.prev_button)
+    if card.screen_number ~= last_details_screen - 1 then fail("wrong number when paging up in the annotation") end
+    tap_widget(card.next_button)
+    if card.screen_number ~= last_details_screen or not card.tag_buttons["topic-details"] then fail("the book's genre is not there") end
+    shot("50bb-book-details-end")
+    tap_widget(card.tag_buttons["topic-details"])
+    wait("books in the genre", function() return top() == menu and menu.collection and menu.collection.finished end)
+    if menu.collection.uuid ~= "topic-details" or #menu.rows ~= 2 then fail("the wrong genre opened") end
+    tap_widget(menu.back_button)
+    wait("back to the book's genres", is_named("YaknigiBookCard"))
+    if top().page ~= 2 or top().screen_number ~= last_details_screen then fail("back from the genre lost the book page") end
+    tap_widget(top().next_button)
+    wait("covers of the related books", function()
+        local screen = top()
+        if not screen.related_button then return false end
+        for i = 1, 4 do if not screen.related.items[i].cover then return false end end
+        return true
+    end)
+    if top().screen_number ~= last_details_screen + 1 then fail("incorrect number after the annotation") end
+    shot("50c-book-recommendations")
+    local first_cell = top().cropping_widget[1][4][1]
+    local slot = first_cell[1][2]
+    local cover = slot[1]:getSize()
+    if cover.w >= slot:getSize().w or math.abs(cover.h - 3 * cover.w) > 3 then
+        fail("the tall recommendation cover lost its original 1:3 proportions")
+    end
+    tap_widget(top().related_button)
+    wait("the recommendations grid", function()
+        return top() == menu and menu.collection and menu.collection.kind == "related"
+    end)
+    if menu.total_pages < 2 or not menu.next_button then fail("the related grid is not paginated") end
+    shot("50d-recommendations-grid")
+    tap_widget(menu.next_button)
+    if menu.page ~= 2 then fail("the second page of recommendations did not open") end
+    tap_widget(menu.back_button)
+    wait("back from the recommendations grid", is_named("YaknigiBookCard"))
+    if top().page ~= 3 or top().screen_number ~= last_details_screen + 1 then
+        fail("back from the recommendations lost the book page")
+    end
     tap_widget(top().back_button)
     UIManager:forceRePaint()
     tap_widget(menu.search_button)
