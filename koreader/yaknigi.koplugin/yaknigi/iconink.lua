@@ -4,6 +4,7 @@ return {
     ["airplane"] = { left = 0.0958, right = 0.0958, top = 0.0708, bottom = 0.0708 },
     ["book"] = { left = 0.1625, right = 0.1625, top = 0.0792, bottom = 0.0792 },
     ["check"] = { left = 0.1208, right = 0.1208, top = 0.2250, bottom = 0.2042 },
+    ["chevron.first"] = { left = 0.0583, right = 0.1000, top = 0.1417, bottom = 0.1417 },
     ["chevron.left"] = { left = 0.2979, right = 0.2979, top = 0.1417, bottom = 0.1417 },
     ["chevron.right"] = { left = 0.2979, right = 0.2979, top = 0.1417, bottom = 0.1417 },
     ["close"] = { left = 0.1625, right = 0.1625, top = 0.1625, bottom = 0.1625 },

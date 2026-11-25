@@ -22,7 +22,7 @@ local Kit = require("yaknigi/kit")
 local Status = require("yaknigi/status")
 local Upload = require("yaknigi/upload")
 
-local BAR_H, PATH_H, FOLDER_H, FILE_H, PAGER_H = 56, 40, 68, 84, 56
+local PATH_H, FOLDER_H, FILE_H = 40, 68, 84
 
 local FilePicker = InputContainer:extend{
     name = "YaknigiFilePicker",
@@ -174,13 +174,13 @@ local function paginate(rows, height)
 end
 
 function FilePicker:build()
-    local W, pad = self.dimen.w, Kit.px(16)
-    local bar_h = Kit.px(BAR_H)
+    local W, pad = self.dimen.w, Kit.px(Kit.PAGE_PAD)
     local parts = self:parts()
     local title = #parts == 1 and "Загрузить книгу" or parts[#parts]
-    self.back = Kit.icon_button("chevron.left", bar_h, function()
+    local title_row
+    title_row, self.back = Kit.page_header(W, title, function()
         if self.dir == self.root then self:close() else self:up() end
-    end, { edge = "left", margin = pad, width = Kit.px(56) })
+    end)
     local path_line = HorizontalGroup:new{ align = "center" }
     if #parts > 1 then
         path_line[1] = gray(table.concat(parts, " / ", 1, #parts - 1) .. " / ", 15)
@@ -196,20 +196,16 @@ function FilePicker:build()
     end
     local header = VerticalGroup:new{ align = "left",
         Status:new{ width = W },
-        OverlapGroup:new{ dimen = Geom:new{ w = W, h = bar_h }, allow_mirroring = false,
-            CenterContainer:new{ dimen = Geom:new{ w = W, h = bar_h },
-                Kit.text(title, 20, { bold = true, max_width = W - 2 * Kit.px(64) }) },
-            self.back,
-        },
+        title_row,
         LeftContainer:new{ dimen = Geom:new{ w = W, h = Kit.px(PATH_H) },
             HorizontalGroup:new{ align = "center", HorizontalSpan:new{ width = pad }, path_line } },
-        Kit.line(W),
     }
     local header_h = header:getSize().h
     local rows = self:listRows()
     local room = self.dimen.h - header_h
+    local pager_h = Kit.px(Kit.PAGE_PAGER_H)
     local pages = paginate(rows, room)
-    if #pages > 1 then pages = paginate(rows, room - Kit.px(PAGER_H)) end
+    if #pages > 1 then pages = paginate(rows, room - pager_h) end
     self.pages = #pages
     self.page = math.max(1, math.min(self.page, self.pages))
     local body = VerticalGroup:new{ align = "left" }
@@ -228,13 +224,12 @@ function FilePicker:build()
     }
     self.pager_prev, self.pager_next = nil, nil
     if self.pages > 1 then
-        local pager_h = Kit.px(PAGER_H)
         local pager
-        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W, pager_h, function(delta)
+        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W - 2 * pad, pager_h, function(delta)
             self:turn(delta)
         end)
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
-            overlap_offset = { 0, self.dimen.h - pager_h }, pager }
+            overlap_offset = { pad, self.dimen.h - pager_h }, pager }
     end
     if self[1] then self[1]:free() end
     self[1] = FrameContainer:new{ background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, frame }

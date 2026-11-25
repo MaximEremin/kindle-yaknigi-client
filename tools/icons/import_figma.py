@@ -18,6 +18,7 @@ GRID = 24
 STROKE = "2.2"
 IDLE = {"tab.library", "yandex-books", "tab.search", "tab.settings", "chevron.right"}
 IDLE_COLOUR = "#888888"  # KOReader's COLOR_DARK_GRAY, as the idle captions
+PAPER_ICONS = {"chevron.first.svg"}
 FORBIDDEN = ("clip-path", "clipPath", "mask", "filter", "<style", "<image", "<use", "<defs", "transform", "class=")
 
 
@@ -96,7 +97,7 @@ def write_ink(icons):
 
 def main():
     icons = json.load(open(sys.argv[1], encoding="utf-8"))
-    wanted = set()
+    wanted = set(PAPER_ICONS)
     cleaned = {}
     for name, svg in icons.items():
         text = cleaned[name] = clean(name, svg)
@@ -111,6 +112,9 @@ def main():
         if stale.endswith(".svg"):
             os.remove(os.path.join(OUT, stale))
             print("removed", stale)
+    for file in PAPER_ICONS:
+        with open(os.path.join(OUT, file), encoding="utf-8") as svg:
+            cleaned[os.path.splitext(file)[0]] = svg.read()
     write_ink(cleaned)
     print(len(wanted), "files")
 

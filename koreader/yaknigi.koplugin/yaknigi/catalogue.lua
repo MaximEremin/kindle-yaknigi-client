@@ -18,9 +18,16 @@ function Catalogue.new(query)
     return { query = query, items = {}, seen = {}, cursor = "", finished = query == nil }
 end
 
---- A catalogue list, such as a series, a genre, the recommendations for a book, or a shelf.
-function Catalogue.collection(kind, uuid, title)
-    return { kind = kind, uuid = uuid, title = title, items = {}, seen = {}, cursor = "", finished = false }
+--- A collection can start with all its items, as in a section of the feed.
+function Catalogue.collection(kind, uuid, title, items)
+    local state = { kind = kind, uuid = uuid, title = title, items = {}, seen = {}, cursor = "", finished = false }
+    if items then Catalogue.add(state, items, "") end
+    return state
+end
+
+function Catalogue.is_collection_link(item)
+    local kind = item.kind
+    return kind == "author" or kind == "series" or kind == "bookshelf" or kind == "found_shelves"
 end
 
 --- Returns true when a request is to be made now: not while one is under way, nor after
@@ -120,8 +127,10 @@ local function shelf_item(found)
     local total = tonumber(type(found.posts) == "table" and found.posts.total)
     local owner = type(found.user) == "table" and type(found.user.name) == "string" and found.user.name or nil
     local url = type(found.cover) == "table" and found.cover.url
-    return list_item("bookshelf", found.uuid, type(found.name) == "string" and found.name or "?", owner, picture(url),
+    local item = list_item("bookshelf", found.uuid, type(found.name) == "string" and found.name or "?", owner, picture(url),
         total and "Полка · " .. Catalogue.count(total, "книга", "книги", "книг") or "Полка")
+    item.books_count = total
+    return item
 end
 
 --- What the library needs of what was found. Nil for what cannot be opened here.
@@ -308,9 +317,11 @@ function Catalogue.bookshelf(shelf)
     local count = tonumber(shelf.books_count)
     local creator = type(shelf.creator) == "table" and shelf.creator.name
     local whose = (shelf.own or shelf.editable == true) and "Моя полка" or "Подписка"
-    return list_item("bookshelf", shelf.uuid, type(shelf.title) == "string" and shelf.title or "?",
+    local item = list_item("bookshelf", shelf.uuid, type(shelf.title) == "string" and shelf.title or "?",
         type(creator) == "string" and creator or nil, rest_cover(shelf),
         count and (whose .. " · " .. Catalogue.count(count, "книга", "книги", "книг")) or whose)
+    item.books_count = count
+    return item
 end
 
 function Catalogue.rest_series(series)
@@ -384,6 +395,12 @@ function Catalogue.cards(items)
 end
 
 function Catalogue.mark_added(item, card)
+    -- A new library card can omit the links and other details that came from the catalogue.
+    if card.book and item.card and item.card.book then
+        for key, value in pairs(item.card.book) do
+            if card.book[key] == nil then card.book[key] = value end
+        end
+    end
     item.in_library = true
     item.mandatory = "в библиотеке"
     item.card = card

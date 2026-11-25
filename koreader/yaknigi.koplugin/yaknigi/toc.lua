@@ -22,7 +22,7 @@ local Screen = Device.screen
 local Kit = require("yaknigi/kit")
 local Status = require("yaknigi/status")
 
-local ROW_H, BAR_H, PAGER_H, INDENT, MAX_DEPTH = 66, 56, 56, 20, 4
+local ROW_H, INDENT, MAX_DEPTH = 66, 20, 4
 
 local Toc = InputContainer:extend{
     name = "YaknigiToc",
@@ -49,7 +49,7 @@ end
 
 function Toc:row(index, item)
     local W, h = self.dimen.w, Kit.px(ROW_H)
-    local pad = Kit.px(16)
+    local pad = Kit.px(Kit.PAGE_PAD)
     local number = self.show_pages and Kit.text(tostring(item.page), 15, { color = Blitbuffer.COLOR_DARK_GRAY }) or nil
     local number_w = number and number:getSize().w + Kit.px(12) or 0
     local indent = Kit.px(INDENT) * math.min((item.depth or 1) - 1, MAX_DEPTH)
@@ -82,25 +82,20 @@ end
 
 function Toc:build()
     local W, H = self.dimen.w, self.dimen.h
-    local bar_h = Kit.px(BAR_H)
-    self.back = Kit.icon_button("chevron.left", bar_h, function() self:close() end,
-        { edge = "left", margin = Kit.px(16), width = Kit.px(56) })
+    local title
+    title, self.back = Kit.page_header(W, "Оглавление", function() self:close() end)
     local header = VerticalGroup:new{ align = "left",
         Status:new{ width = W },
-        OverlapGroup:new{ dimen = Geom:new{ w = W, h = bar_h }, allow_mirroring = false,
-            CenterContainer:new{ dimen = Geom:new{ w = W, h = bar_h },
-                Kit.text("Оглавление", 20, { bold = true, max_width = W - 2 * Kit.px(64) }) },
-            self.back,
-        },
-        Kit.line(W),
+        title,
     }
     local header_h = header:getSize().h
 
     local row_h = Kit.px(ROW_H) + Kit.px(1)
+    local pager_h = Kit.px(Kit.PAGE_PAGER_H)
     local room = H - header_h
     local per_page = math.max(1, math.floor(room / row_h))
     if #self.items > per_page then
-        per_page = math.max(1, math.floor((room - Kit.px(PAGER_H)) / row_h))
+        per_page = math.max(1, math.floor((room - pager_h) / row_h))
     end
     self.pages = math.max(1, math.ceil(#self.items / per_page))
     -- It opens where the reader is.
@@ -127,12 +122,12 @@ function Toc:build()
     end
     self.pager_prev, self.pager_next = nil, nil
     if self.pages > 1 then
-        local pager_h = Kit.px(PAGER_H)
+        local pad = Kit.px(Kit.PAGE_PAD)
         local pager
-        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W, pager_h, function(delta)
+        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W - 2 * pad, pager_h, function(delta)
             self:turn(delta)
         end)
-        frame[3] = FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { 0, H - pager_h }, pager }
+        frame[3] = FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, H - pager_h }, pager }
     end
     if self[1] then self[1]:free() end
     self[1] = FrameContainer:new{ background = Blitbuffer.COLOR_WHITE, bordersize = 0, padding = 0, frame }

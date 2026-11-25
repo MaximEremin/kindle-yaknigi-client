@@ -713,7 +713,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Auth-Token") != "mock-token" or not match:
             self.reply(401, b"")
             return
-        self.server.removed.append(match.group(1))
+        card = match.group(1)
+        self.server.removed.append(card)
+        added = re.fullmatch(r"added(\d+)", card)
+        if added:
+            book = "found" + added.group(1)
+            self.server.added[:] = [uuid for uuid in self.server.added if uuid != book]
         self.reply(204, b"")
 
     def do_PUT(self):
@@ -1070,7 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
             start = (page - 1) * 10
             everything = ([self.card(i) for i in range(BOOKS)] + [self.added_card(u) for u in self.server.added]
                           + [self.taken_card(u) for u in self.server.taken])
-            everything = [c for c in everything if c["uuid"] not in self.server.removed]
+            everything = [c for c in everything if c["uuid"].startswith("added") or c["uuid"] not in self.server.removed]
             cards = everything[start:start + 10]
             self.reply_json(200, {"library_cards": cards})
         elif url.path.startswith("/cover/"):

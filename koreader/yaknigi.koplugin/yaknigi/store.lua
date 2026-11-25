@@ -182,9 +182,9 @@ end
 function Store:missing(around)
     local out, seen = {}, {}
     local function add(p)
-        if p and not seen[p] and not self:has(p) then
+        if p and not seen[p] then
             seen[p] = true
-            out[#out + 1] = p
+            if not self:has(p) then out[#out + 1] = p end
         end
     end
     local function add_chapter(p)

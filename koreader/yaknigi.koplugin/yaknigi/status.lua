@@ -68,22 +68,26 @@ function Status:paintTo(bb, x, y)
     end
 end
 
---- Keeps the strip of a screen up to date; returns what to call when the screen closes.
-function Status.watch(owner)
-    local W, H = Screen:getWidth(), Status.height()
-    local time_w = Kit.px(16) + Kit.px(70)
-    local time_region = Geom:new{ x = 0, y = 0, w = time_w, h = H }
-    local rest_region = Geom:new{ x = time_w, y = 0, w = W - time_w, h = H }
-    local tick
-    tick = function()
-        if not Device.screen_saver_mode then
-            UIManager:setDirty(owner, Kit.clock_refresh(time_region))
-            UIManager:setDirty(owner, "ui", rest_region)
-        end
-        UIManager:scheduleIn(61 - tonumber(os.date("%S")), tick)
+local watched = {}
+local function tick()
+    local owner = UIManager:getTopmostVisibleWidget()
+    if watched[owner] and not Device.screen_saver_mode then
+        local time_w = Kit.px(16) + Kit.px(70)
+        local h = Status.height()
+        UIManager:setDirty(owner, Kit.clock_refresh(Geom:new{ x = 0, y = 0, w = time_w, h = h }))
+        UIManager:setDirty(owner, "ui", Geom:new{ x = time_w, y = 0, w = Screen:getWidth() - time_w, h = h })
     end
     UIManager:scheduleIn(61 - tonumber(os.date("%S")), tick)
-    return function() UIManager:unschedule(tick) end
+end
+
+--- Stacked screens share a timer. Only the foreground strip needs repainting.
+function Status.watch(owner)
+    if not next(watched) then UIManager:scheduleIn(61 - tonumber(os.date("%S")), tick) end
+    watched[owner] = true
+    return function()
+        watched[owner] = nil
+        if not next(watched) then UIManager:unschedule(tick) end
+    end
 end
 
 return Status

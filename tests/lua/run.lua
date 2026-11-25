@@ -742,9 +742,12 @@ eq(state.finished, true, "only repeats: ends it")
 eq(Catalogue.new(nil).finished, true, "nothing asked")
 eq(#Catalogue.cards({ found_item }), 1, "cards for the covers")
 local marked = Catalogue.item(found_book("m"))
-Catalogue.mark_added(marked, { uuid = "real" })
+marked.card.book.series_list = { { uuid = "series", title = "Серия" } }
+Catalogue.mark_added(marked, { uuid = "real", book = { uuid = "m", title = "Обновлённое название" } })
 eq(marked.card.uuid, "real", "the real card after adding")
 eq(marked.mandatory, "в библиотеке", "marked after adding")
+eq(marked.card.book.title, "Обновлённое название", "the new card's title wins")
+eq(marked.card.book.series_list[1].uuid, "series", "adding keeps the catalogue's series link")
 
 -- The feed
 local Feed = require("yaknigi/feed")

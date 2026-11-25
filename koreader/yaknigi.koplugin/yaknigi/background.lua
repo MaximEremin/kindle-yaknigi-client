@@ -37,26 +37,29 @@ function Background.fetch_all(store, api, around)
     local failures = 0
     local failed = {}
     local parent = ffi.C.getppid()
+    local queue, priority, index
     while true do
         -- KOReader has quit: nothing will use this, and the Kindle UI needs the memory.
         if ffi.C.getppid() ~= parent then return false end
         local center = read_number(store.dir .. "/priority") or around
-        local path
-        for _, p in ipairs(store:missing(center)) do
-            if not failed[p] then path = p; break end
+        if not queue or center ~= priority then
+            queue, priority, index = store:missing(center), center, 1
         end
+        local path = queue[index]
         if not path then break end
-        local data, kind = store:fetch(api, path)
-        if data then
-            store:write(path, data)
-            failures = 0
-        else
-            -- A resource can be missing on the server; do not stop for that, but
-            -- when the network is gone there is no point in trying every file.
-            failed[path] = true
-            failures = failures + 1
-            logger.warn("yaknigi: fetch failed:", kind)
-            if kind == "auth" or failures >= 5 then return false end
+        index = index + 1
+        if not failed[path] and not store:has(path) then
+            local data, kind = store:fetch(api, path)
+            if data then
+                if not store:write(path, data) then return false end
+                failures = 0
+            else
+                -- One unavailable resource need not stop the rest of the book.
+                failed[path] = true
+                failures = failures + 1
+                logger.warn("yaknigi: fetch failed:", kind)
+                if kind == "auth" or failures >= 5 then return false end
+            end
         end
     end
     -- Only a chapter is essential; crengine shows a book without some image.

@@ -153,9 +153,7 @@ local function asked()
 end
 
 local function answer(box, go)
-    local callback = go and box.ok_callback or box.cancel_callback
-    callback()
-    UIManager:close(box)
+    tap_widget(go and box.buttons.ok or box.buttons.cancel)
 end
 
 local function open(menu, needle)
@@ -705,8 +703,7 @@ local function test_reading_screen()
     tap_widget(notes.removes[1])
     local box = wait("the question", function() return top().ok_callback and top() end)
     shot("19c-notes-remove")
-    box.ok_callback()
-    UIManager:close(box)
+    answer(box, true)
     if #reader().annotation.annotations ~= count - 1 then fail("the note was not removed") end
     wait("the notes again", is_named("YaknigiNotes"))
     tap_widget(notes.back)
@@ -1212,6 +1209,9 @@ local function test_lists()
         end
         fail("nothing of kind " .. kind)
     end
+    local function collection_row(menu)
+        return menu[1][1][2][1][1] -- first cover row, with spacers between tiles
+    end
     local menu = to_library()
     local cards_before = #menu.item_table
 
@@ -1246,8 +1246,23 @@ local function test_lists()
     end
     if menu:currentTab() ~= "search" then fail("the list left its tab") end
     UIManager:forceRePaint()
+    local covers = collection_row(menu)
+    if covers[1].dimen.x >= covers[3].dimen.x then fail("the author's books and series are not in a grid") end
+    if next(menu.row_buttons) then fail("the collection has actions beside the covers") end
     shot("71-author")
-    tap_widget(menu.row_buttons[of_kind(menu, "series")])
+    tap_widget(covers[3])
+    wait("the card from the collection", is_named("YaknigiBookCard"))
+    local card = top()
+    if not card.add_button.callback or not card.download_button.callback then
+        fail("no add or download action on the book card")
+    end
+    tap_widget(card.add_button)
+    wait("the book added from its card", function() return card.owned end)
+    tap_widget(card.add_button)
+    wait("the book removed from its card", function() return not card.owned end)
+    tap_widget(card.back_button)
+    wait("back to the collection from the card", function() return top() == menu end)
+    tap_widget(collection_row(menu)[1])
     finished(menu, "Подборка")
     titles = {}
     for _, row in ipairs(menu.rows) do titles[#titles + 1] = row.title end
@@ -1260,7 +1275,7 @@ local function test_lists()
     UIManager:forceRePaint()
     shot("72-series")
     local closed_view = menu.view
-    tap_widget(menu.row_buttons[menu.rows[4]])
+    tap_widget(collection_row(menu)[7])
     wait("the word that it is closed", is_named("YaknigiNoAccess"))
     shot("72-series-closed")
     tap_widget(top().close_button)
@@ -2238,8 +2253,7 @@ local function test_finished(plugin)
     if tonumber(cached().progress) ~= tonumber(progress) then fail("the mark changed what was read") end
     if select(2, Session.read_card(dir)) ~= "finished" then fail("the book's own note of the state") end
 
-    -- The mark on the covers of read books, at the sizes they are shown in: from the dock's
-    -- and the list's, with a corner, to the shelves' and the book card's, with the ribbon.
+    -- Finished covers carry the same check at each size used by the library.
     local Library = require("yaknigi/library")
     local lfs = require("libs/libkoreader-lfs")
     local picture
@@ -2267,7 +2281,7 @@ local function test_finished(plugin)
     }
     UIManager:show(tag_sheet)
     UIManager:forceRePaint()
-    shot("70a-read-ribbons")
+    shot("70a-read-checks")
     UIManager:close(tag_sheet)
     UIManager:forceRePaint()
 
@@ -2356,11 +2370,6 @@ local function test_updates(plugin)
             return t.name == "YaknigiUpdateOffer" and t
         end)
     end
-    local function press(box, which)
-        box[which .. "_callback"]()
-        UIManager:close(box)
-    end
-
     -- Nothing is out.
     plugin:checkUpdates(true)
     UIManager:close(info("последняя версия"))
@@ -2378,12 +2387,12 @@ local function test_updates(plugin)
     local box = offer()
     shot("41-update-offer")
     if Updater.pending(update_dir) then fail("the update came before it was asked for") end
-    press(box, "choice1")
+    tap_widget(box.buttons.later)
     if AppState:readSetting("update_skipped") then fail("«later» counted as skipping") end
 
     -- A skipped version is not offered by itself, but is on asking.
     plugin:checkUpdates(true)
-    press(offer(), "choice2")
+    tap_widget(offer().buttons.skip)
     if AppState:readSetting("update_skipped") ~= "9.9.9" then fail("the version was not skipped") end
     AppState:delSetting("update_checked")
     plugin:autoUpdate()
@@ -2405,7 +2414,7 @@ local function test_updates(plugin)
     UIManager.restartKOReader = function() restarted = true end
     http.request(base .. "/test/update?mode=corrupt")
     plugin:checkUpdates(true)
-    press(offer(), "cancel")
+    tap_widget(offer().buttons.update)
     UIManager:close(info("Не удалось загрузить"))
     if Updater.pending(update_dir) then fail("a corrupt update waits to be installed") end
     if applied or restarted then fail("a corrupt update was installed") end
@@ -2413,7 +2422,7 @@ local function test_updates(plugin)
     -- A good one, through a redirect: fetched, put in place, and the app restarts.
     http.request(base .. "/test/update?mode=good")
     plugin:checkUpdates(true)
-    press(offer(), "cancel")
+    tap_widget(offer().buttons.update)
     wait("the restart", function() return restarted end)
     Updater.apply, UIManager.restartKOReader = apply, restart
     if not applied then fail("the update was not put in place") end
@@ -2669,9 +2678,9 @@ local function script()
         tap_widget(menu.prev_button)
     end
     if menu.page ~= 1 then fail("the arrow did not turn the library back") end
-    tap_at(40, 100) -- the corner of the way back from a book: not a way out of the app
+    tap_widget(menu.back_button)
     UIManager:forceRePaint()
-    if top() ~= menu then fail("a tap in the library's corner closed it") end
+    if top() ~= menu or menu.view ~= "home" then fail("back from the library section") end
     tap_at(40, 100) -- and on the first screen it does nothing at all
     UIManager:forceRePaint()
     if top() ~= menu or menu.view ~= "home" then fail("a second tap in the corner did something") end
@@ -3092,6 +3101,7 @@ local function script()
     tap_widget(card.tag_buttons["topic-details"])
     wait("books in the genre", function() return top() == menu and menu.collection and menu.collection.finished end)
     if menu.collection.uuid ~= "topic-details" or #menu.rows ~= 2 then fail("the wrong genre opened") end
+    shot("50bc-genre-grid")
     tap_widget(menu.back_button)
     wait("back to the book's genres", is_named("YaknigiBookCard"))
     if top().page ~= 2 or top().screen_number ~= last_details_screen then fail("back from the genre lost the book page") end
@@ -3142,6 +3152,10 @@ local function script()
     UIManager:forceRePaint()
     if menu.total_pages ~= 3 then fail("the feed's pages: " .. menu.total_pages) end
     shot("51-feed-page-2")
+    tap_widget(menu.feed_sections[1])
+    if menu:currentTab() ~= "feed" then fail("the collection left the feed's tab") end
+    tap_widget(menu.back_button)
+    if menu.view ~= "feed" or menu.page ~= 2 then fail("back from the collection lost the feed's page") end
     tap_widget(menu.first_button)
     if menu.page ~= 1 then fail("the first-page shortcut did not go to the start") end
     UIManager:forceRePaint()
@@ -3157,7 +3171,8 @@ local function script()
     UIManager:forceRePaint()
     -- A section as a cover grid.
     tap_widget(menu.feed_sections[2])
-    if menu.view ~= "feed_section" or menu.section.name ~= "Популярное" then fail("no section") end
+    if menu.view ~= "collection" or menu.collection.kind ~= "feed_section" or menu.collection.title ~= "Популярное"
+        or not menu.collection.finished then fail("no section") end
     wait("the section's covers", function()
         for _, item in ipairs(menu.rows) do
             if not item.cover then return false end
@@ -3174,7 +3189,7 @@ local function script()
     tap_widget(menu.feed_sections[1])
     UIManager:forceRePaint()
     local with_cover
-    for _, item in ipairs(menu.section.items) do
+    for _, item in ipairs(menu.collection.items) do
         if item.card.book.uuid == "found7" then with_cover = item end
     end
     if not with_cover then fail("the book with a picture is not in the feed") end
@@ -3211,7 +3226,9 @@ local function script()
     shot("54-cover-a-page-back")
     reader():onHome()
     menu = library_with(23)
-    if menu.view ~= "feed_section" then fail("the section was forgotten: " .. menu.view) end
+    if menu.view ~= "collection" or menu.collection.kind ~= "feed_section" then
+        fail("the section was forgotten: " .. menu.view)
+    end
     UIManager:forceRePaint()
     tap_widget(menu.tab_cells.library)
     UIManager:forceRePaint()
@@ -3445,8 +3462,7 @@ local function plugin_script()
     end)
     if not tostring(told.text):find("yaknigi.koplugin.zip", 1, true) then fail("the news says not where to get it") end
     shot("p04-new-version")
-    told.cancel_callback()
-    UIManager:close(told)
+    tap_widget(told.buttons.cancel)
     if require("yaknigi/appstate"):readSetting("update_skipped") ~= "9.9.9" and
         not require("yaknigi/appstate"):readSetting("update_skipped") then
         fail("«skip» was not kept")

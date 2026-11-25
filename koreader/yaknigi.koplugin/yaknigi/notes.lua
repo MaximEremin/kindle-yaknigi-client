@@ -2,7 +2,6 @@
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local CenterContainer = require("ui/widget/container/centercontainer")
-local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
@@ -19,6 +18,7 @@ local Screen = Device.screen
 
 local Kit = require("yaknigi/kit")
 local NotesLocal = require("yaknigi/notes_local")
+local Notice = require("yaknigi/notice")
 
 local NOTE_SHOWN_LETTERS = 300
 
@@ -84,30 +84,23 @@ end
 
 function Notes:build()
     local W, H = Screen:getWidth(), Screen:getHeight()
-    local pad = Kit.px(16)
+    local pad = Kit.px(Kit.PAGE_PAD)
     local inner = W - 2 * pad
-    local side = Kit.px(56)
-    local header_h, footer_h, row_h = Kit.px(60), Kit.px(56), Kit.px(112)
+    local header
+    header, self.back = Kit.page_header(W, "Заметки", function() self:close() end)
+    local header_h, footer_h, row_h = header:getSize().h, Kit.px(Kit.PAGE_PAGER_H), Kit.px(112)
+    local line_h = Kit.px(1)
     local items = self.ui.annotation.annotations or {}
-    local per_page = math.floor((H - header_h - footer_h - Kit.px(2)) / row_h)
+    local per_page = math.max(1, math.floor((H - header_h - footer_h) / (row_h + line_h)))
     local pages = math.max(1, math.ceil(#items / per_page))
     self.page = math.max(1, math.min(self.page, pages))
     self.pages = pages
-
-    self.back = Kit.icon_button("chevron.left", side, function() self:close() end, { edge = "left", margin = pad })
-    local header = HorizontalGroup:new{ align = "center",
-        self.back,
-        CenterContainer:new{
-            dimen = Geom:new{ w = W - 2 * side, h = header_h },
-            Kit.text("Заметки", 20, { bold = true }),
-        },
-    }
 
     local body = VerticalGroup:new{ align = "left" }
     self.opens, self.removes, self.locks = {}, {}, {}
     if #items == 0 then
         body[1] = CenterContainer:new{
-            dimen = Geom:new{ w = inner, h = H - header_h - footer_h - Kit.px(2) },
+            dimen = Geom:new{ w = inner, h = H - header_h },
             Kit.text("Здесь будут закладки и выделенный текст", 18, { color = Blitbuffer.COLOR_DARK_GRAY, max_width = inner }),
         }
     end
@@ -124,8 +117,8 @@ function Notes:build()
     local frame = OverlapGroup:new{
         dimen = self.dimen:copy(),
         allow_mirroring = false,
-        VerticalGroup:new{ align = "left", overlap_offset = { 0, 0 }, header, Kit.line(W) },
-        FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, header_h + Kit.px(1) }, body },
+        header,
+        FrameContainer:new{ bordersize = 0, padding = 0, overlap_offset = { pad, header_h }, body },
     }
     self.prev_button, self.next_button = nil, nil
     if pages > 1 then
@@ -195,8 +188,8 @@ function Notes:open(item)
 end
 
 function Notes:askRemove(item)
-    UIManager:show(ConfirmBox:new{
-        text = item.drawer and "Удалить выделение?" or "Удалить закладку?",
+    UIManager:show(Notice.confirm{
+        title = item.drawer and "Удалить выделение?" or "Удалить закладку?",
         ok_text = "Удалить",
         cancel_text = "Отмена",
         ok_callback = function() self:remove(item) end,

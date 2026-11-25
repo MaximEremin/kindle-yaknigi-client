@@ -10,11 +10,9 @@ local Kit = require("yaknigi/kit")
 local Power = {}
 
 
---- The button for a corner of the header: the drawing stands as far from the edge as the text.
-function Power.button(height, callback)
-    local icon = Kit.px(30)
-    return Kit.button(Kit.icon("power", icon),
-        icon + 2 * Kit.px(16), height, callback)
+function Power.button(callback)
+    local side = Kit.px(56)
+    return Kit.round_button(Kit.icon("power", Kit.px(24), { alpha = true }), side, side, callback)
 end
 
 --- Saves what there is to save and turns the device off, the picture of the book left on it.

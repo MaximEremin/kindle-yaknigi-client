@@ -231,6 +231,7 @@ end
 
 --- Each minute's turn of the clock on the page.
 function Shell:startClock()
+    if self.clock_tick or not Prefs.reading_clock() then return end
     local UIManager = require("ui/uimanager")
     local function next_minute() return 61 - tonumber(os.date("%S")) end
     self.clock_tick = function()

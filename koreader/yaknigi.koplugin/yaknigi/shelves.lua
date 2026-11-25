@@ -5,7 +5,7 @@ local Shelves = {}
 local NAMES = {
     reading = "Читаю",
     want = "Хочу прочитать",
-    finished = "Прочитанные",
+    finished = "Прочитано",
     device = "На устройстве",
     all = "Все книги",
 }

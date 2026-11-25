@@ -4,7 +4,6 @@
 -- it does not fit the screen.
 local Blitbuffer = require("ffi/blitbuffer")
 local CenterContainer = require("ui/widget/container/centercontainer")
-local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local Event = require("ui/event")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -12,7 +11,6 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
@@ -26,6 +24,7 @@ local Screen = Device.screen
 local AppState = require("yaknigi/appstate")
 local Fonts = require("yaknigi/fonts")
 local Kit = require("yaknigi/kit")
+local Notice = require("yaknigi/notice")
 local Power = require("yaknigi/power")
 local Prefs = require("yaknigi/prefs")
 local Status = require("yaknigi/status")
@@ -33,7 +32,7 @@ local Storage = require("yaknigi/storage")
 local Tabs = require("yaknigi/tabs")
 local Terms = require("yaknigi/terms")
 
-local ROW_H, HEADING_H, BAR_H, PAGER_H = 60, 46, 56, 56
+local ROW_H, HEADING_H = 60, 46
 
 local Settings = InputContainer:extend{
     name = "YaknigiSettings",
@@ -121,6 +120,7 @@ function Settings:entries()
     if app then
         switch("clock", "Часы на странице", Prefs.reading_clock(), function(on)
             G_reader_settings:saveSetting("yaknigi_reading_clock", on)
+            UIManager:broadcastEvent(Event:new("YaknigiReadingClockChanged"))
         end)
     end
     if app and Device:canDoSwipeAnimation() or self.all_rows then
@@ -377,7 +377,7 @@ function Settings:clearCache()
             cache.busy = false
             cache.freed = freed
             if self.gone then return end
-            UIManager:show(InfoMessage:new{ text = "Освобождено " .. Storage.size_text(freed), timeout = 3 })
+            Notice.toast("Освобождено " .. Storage.size_text(freed), nil, 3)
             if self.cache == cache then
                 cache.sizes = nil
                 self:changed()
@@ -386,8 +386,9 @@ function Settings:clearCache()
         end)
     end
     if picks.books then
-        self.cache_confirm = ConfirmBox:new{
-            text = "Удалить сохранённые книги с устройства? Их можно будет скачать снова, место чтения и заметки останутся.",
+        self.cache_confirm = Notice.confirm{
+            title = "Удалить скачанные книги?",
+            text = "Их можно будет скачать снова. Место чтения и заметки сохранятся.",
             ok_text = "Удалить",
             ok_callback = go,
         }
@@ -452,7 +453,7 @@ function Settings:fontRows()
         local widget = Kit.Tappable:new{
             callback = function()
                 if on and shown <= 1 then
-                    UIManager:show(InfoMessage:new{ text = "Хотя бы один шрифт должен остаться", timeout = 2 })
+                    Notice.message("Хотя бы один шрифт должен остаться", 2)
                     return
                 end
                 Fonts.set_hidden(name, on)
@@ -508,50 +509,27 @@ end
 
 function Settings:build()
     local W = self.dimen.w
-    -- As a tab it stands in line with the library's header.
-    local bar_h = Kit.px(self.on_tab and 60 or BAR_H)
     local choice = self.choice
     local title = choice and choice.title or "Настройки"
-    local top_tab = self.on_tab and not choice
-    self.back = nil
-    local header_row
-    if top_tab then
-        local box = Geom:new{ w = W, h = bar_h }
-        header_row = LeftContainer:new{ dimen = box,
-            HorizontalGroup:new{ align = "center",
-                HorizontalSpan:new{ width = Kit.px(16) },
-                Kit.text(title, 28, { bold = true, max_width = W - 2 * Kit.px(16) }),
-            },
-        }
-    else
-        self.back = Kit.icon_button("chevron.left", bar_h, function()
-            if self.choice then
-                self.choice = nil
-                self.page = self.list_page or 1
-                self:changed()
-            else
-                self:close()
-            end
-        end, { edge = "left", margin = Kit.px(16), width = Kit.px(56) })
-        header_row = OverlapGroup:new{
-            dimen = Geom:new{ w = W, h = bar_h },
-            allow_mirroring = false,
-            CenterContainer:new{ dimen = Geom:new{ w = W, h = bar_h },
-                Kit.text(title, 20, { bold = true, max_width = W - 2 * Kit.px(64) }) },
-            self.back,
-        }
+    local function go_back()
+        if self.choice then
+            self.choice = nil
+            self.page = self.list_page or 1
+            self:changed()
+        else
+            self:close()
+        end
     end
     self.power = nil
     if self.on_close_app and not choice then
-        self.power = Power.button(bar_h, function() self:showPower() end)
-        self.power.overlap_align = "right"
-        header_row = OverlapGroup:new{ dimen = Geom:new{ w = W, h = bar_h }, allow_mirroring = false,
-            header_row, self.power }
+        self.power = Power.button(function() self:showPower() end)
     end
+    local header_row
+    local on_back = (choice or not self.on_tab) and go_back or nil
+    header_row, self.back = Kit.page_header(W, title, on_back, self.power)
     local header = VerticalGroup:new{ align = "left",
         Status:new{ width = W },
         header_row,
-        Kit.line(W),
     }
     local header_h = header:getSize().h
     local tabs_h = 0
@@ -571,9 +549,10 @@ function Settings:build()
         rows = self:mainRows()
     end
     local room = self.body_height or self.dimen.h - header_h - tabs_h
+    local pager_h = Kit.px(Kit.PAGE_PAGER_H)
     local pages = paginate(rows, room)
     if #pages > 1 then
-        pages = paginate(rows, room - Kit.px(PAGER_H))
+        pages = paginate(rows, room - pager_h)
     end
     self.pages = #pages
     self.page = math.max(1, math.min(self.page, self.pages))
@@ -588,13 +567,13 @@ function Settings:build()
     }
     self.pager_prev, self.pager_next = nil, nil
     if self.pages > 1 then
-        local pager_h = Kit.px(PAGER_H)
+        local pad = Kit.px(Kit.PAGE_PAD)
         local pager
-        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W, pager_h, function(delta)
+        pager, self.pager_prev, self.pager_next = Kit.pager(self.page, self.pages, W - 2 * pad, pager_h, function(delta)
             self:turn(delta)
         end)
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
-            overlap_offset = { 0, self.dimen.h - tabs_h - pager_h }, pager }
+            overlap_offset = { pad, self.dimen.h - tabs_h - pager_h }, pager }
     end
     if tab_bar then
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,

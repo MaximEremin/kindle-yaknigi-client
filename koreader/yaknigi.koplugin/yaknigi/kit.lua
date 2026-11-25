@@ -12,12 +12,14 @@ local IconWidget = require("ui/widget/iconwidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local ProgressWidget = require("ui/widget/progresswidget")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Fonts = require("yaknigi/fonts")
 local Screen = Device.screen
 
 local Kit = {}
@@ -25,6 +27,9 @@ local Kit = {}
 Kit.paper_gray = Blitbuffer.Color8(234)
 Kit.paper_line = Blitbuffer.Color8(218)
 Kit.paper_muted = Blitbuffer.Color8(100)
+Kit.PAGE_PAD = 20
+Kit.PAGE_HEADER_H = 80
+Kit.PAGE_PAGER_H = 76
 
 function Kit.px(n) return Screen:scaleBySize(n) end
 -- Corners of what lies on the page and of what holds a picture.
@@ -50,6 +55,12 @@ function Kit.text(text, size, opts)
         fgcolor = opts.color,
         max_width = opts.max_width,
     }
+end
+
+function Kit.screen_text(style, text, size, opts)
+    opts = opts or {}
+    opts.face = Fonts.screen_face(style, size)
+    return Kit.text(text, size, opts)
 end
 
 function Kit.line(width)
@@ -352,21 +363,69 @@ function Kit.value_and_chevron(value)
     return group, Kit.icon_right_room("chevron.right", icon)
 end
 
---- < page / pages >. on_turn gets -1 or 1. Returns the row and both arrows.
+--- A screen title. A nested page has a round back button and a centered title.
+function Kit.page_header(width, title, on_back, right, count)
+    local pad, side, gap = Kit.px(Kit.PAGE_PAD), Kit.px(56), Kit.px(8)
+    local box = Geom:new{ w = width, h = Kit.px(Kit.PAGE_HEADER_H) }
+    local right_w = right and right:getSize().w or 0
+    local back = on_back and Kit.round_button(Kit.icon("chevron.left", Kit.px(24), { alpha = true }), side, side, on_back)
+    local title_w = width - 2 * pad
+    if back then title_w = title_w - 2 * (math.max(side, right_w) + gap)
+    elseif right then title_w = title_w - right_w - gap end
+    local number = count and Kit.screen_text("number", tostring(count), 38)
+    if number then title_w = title_w - gap - number:getSize().w end
+    local heading = Kit.screen_text("heading", title, 38, { max_width = math.max(1, title_w) })
+    local content
+    if back then
+        local label = number and HorizontalGroup:new{ align = "center", heading, HorizontalSpan:new{ width = gap }, number }
+            or heading
+        content = CenterContainer:new{ dimen = box:copy(), label }
+    else
+        content = LeftContainer:new{ dimen = box:copy(), HorizontalGroup:new{ align = "center",
+            HorizontalSpan:new{ width = pad }, heading,
+        } }
+    end
+    local row = OverlapGroup:new{ dimen = box, allow_mirroring = false, content }
+    local function at(w, x, widget)
+        return CenterContainer:new{ dimen = Geom:new{ w = w, h = box.h }, overlap_offset = { x, 0 }, widget }
+    end
+    if back then row[#row + 1] = at(side, pad, back) end
+    if right then row[#row + 1] = at(right_w, width - pad - right_w, right) end
+    return row, back
+end
+
+local function page_arrow(icon, width, height, action)
+    local image = Kit.icon(icon, Kit.px(24), { alpha = true })
+    if not action then return Kit.rounded(image, width, height) end
+    return Kit.round_button(image, width, height, action)
+end
+
+--- Returns the pager and its actions. on_turn gets the number of pages to move.
 function Kit.pager(page, pages, width, height, on_turn)
-    local third = math.floor(width / 3)
-    local icon = Kit.px(36)
-    local prev = Kit.button(Kit.icon("chevron.left", icon), third, height, function() on_turn(-1) end)
-    local next_ = Kit.button(Kit.icon("chevron.right", icon), third, height, function() on_turn(1) end)
-    local row = HorizontalGroup:new{ align = "center",
-        prev,
-        CenterContainer:new{
-            dimen = Geom:new{ w = width - 2 * third, h = height },
-            Kit.text(page .. " / " .. pages, 17),
-        },
-        next_,
+    local pill_h = math.min(height, Kit.px(56))
+    local pill_w = math.min(Kit.px(120), math.floor(width / 4))
+    local first_w = math.min(pill_h, math.floor(width / 8))
+    local arrow_x = first_w + math.min(Kit.px(10), math.floor(width / 20))
+    local box = Geom:new{ w = width, h = height }
+    local prev = page_arrow("chevron.left", pill_w, pill_h, page > 1 and function() on_turn(-1) end or nil)
+    local next_ = page_arrow("chevron.right", pill_w, pill_h, page < pages and function() on_turn(1) end or nil)
+    local row = OverlapGroup:new{
+        dimen = box:copy(),
+        allow_mirroring = false,
+        CenterContainer:new{ dimen = box, Kit.screen_text("number", tostring(page), 36) },
     }
-    return row, prev, next_
+    local function at(w, x, widget)
+        return CenterContainer:new{ dimen = Geom:new{ w = w, h = height }, overlap_offset = { x, 0 }, widget }
+    end
+    row[2] = at(pill_w, arrow_x, prev)
+    row[3] = at(pill_w, width - arrow_x - pill_w, next_)
+    local first
+    if page > 1 then
+        local icon = Kit.icon("chevron.first", math.min(Kit.px(32), first_w), { alpha = true })
+        first = Kit.round_button(icon, first_w, pill_h, function() on_turn(1 - page) end)
+        row[4] = at(first_w, 0, first)
+    end
+    return row, prev, next_, first
 end
 
 --- An icon or short text with a caption beneath, for the panel's bottom row.

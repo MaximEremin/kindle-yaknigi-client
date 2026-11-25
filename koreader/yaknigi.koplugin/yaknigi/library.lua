@@ -30,8 +30,7 @@ local SearchBox = require("yaknigi/searchbox")
 local Shelves = require("yaknigi/shelves")
 local Status = require("yaknigi/status")
 local Tabs = require("yaknigi/tabs")
-
-local PROGRESS_BADGE = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$") .. "/progress-badge.svg"
+local screen_text = Kit.screen_text
 
 -- item_table holds { text, title, authors, mandatory, card, sign_in, whole, cover, shelf }.
 -- What went wrong and what to do about it, each on a line of its own: together they
@@ -51,7 +50,7 @@ local Library = InputContainer:extend{
     covers_fullscreen = true,
     item_table = nil,
     page = 1,
-    view = "home", -- or a shelf's id, "catalogue": all of Yandex's books, "feed" or "feed_section"
+    view = "home", -- or a shelf's id, "catalogue", "feed" or "collection"
     query = nil,
     place = nil, -- a table that outlives this screen, for coming back from a book
     message = nil,
@@ -80,7 +79,7 @@ function Library:init()
     self.page = self.place.page or 1
     self.catalogue = self.place.catalogue
     self.collection, self.trail = self.place.collection, self.place.trail or {}
-    self.feed, self.section = self.place.feed, self.place.section
+    self.feed = self.place.feed
     self.feed_page = self.place.feed_page or 1
     if self.view == "catalogue" and not self.catalogue then
         self.view, self.query = "home", nil
@@ -88,11 +87,8 @@ function Library:init()
     if self.view == "collection" and not self.collection then
         self.view, self.trail = "home", {}
     end
-    if (self.view == "feed" or self.view == "feed_section") and not self.feed then
+    if self.view == "feed" and not self.feed then
         self.view = "home"
-    end
-    if self.view == "feed_section" and not self.section then
-        self.view, self.page = "feed", self.feed_page
     end
     self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
     self.stop_status = Status.watch(self)
@@ -100,6 +96,16 @@ function Library:init()
         Swipe = { GestureRange:new{ ges = "swipe", range = self.dimen } },
     }
     self:build()
+end
+
+local function folder_cover(w, h)
+    return FrameContainer:new{
+        background = Kit.paper_gray,
+        bordersize = 0, padding = 0, radius = Kit.px(4),
+        CenterContainer:new{ dimen = Geom:new{ w = w, h = h },
+            Kit.icon("folder", Kit.px(32), { alpha = true }),
+        },
+    }
 end
 
 local function plain_cover(item, w, h, translucent_edge)
@@ -128,6 +134,9 @@ local function plain_cover(item, w, h, translucent_edge)
             }
         end
     end
+    if item.kind == "bookshelf" then
+        return folder_cover(w, h)
+    end
     -- No cover yet: a frame with the first letter of the title.
     local letter = (item.title or "?"):match("[%z\1-\127\194-\244][\128-\191]*") or "?"
     return FrameContainer:new{
@@ -142,11 +151,51 @@ local function plain_cover(item, w, h, translucent_edge)
     }
 end
 
-local function cover_box(item, w, h, translucent_edge)
+local function percentage(item)
+    return math.floor(math.max(0, math.min(100, item.percent or 0)))
+end
+
+local SHELF_LAYERS = { Blitbuffer.Color8(220), Blitbuffer.Color8(192) }
+
+local function shelf_cover(item, w, h, translucent_edge)
+    local layers = #SHELF_LAYERS
+    local step = math.min(Kit.px(6), math.floor(h / 8))
+    local front_h = h - layers * step
+    if item.books_count == 0 then return folder_cover(w, front_h) end
+    local front = plain_cover(item, w, front_h, translucent_edge)
+    local size = front:getSize()
+    step = math.min(step, math.floor(size.h / 4), math.floor(size.w / 6))
+    if step == 0 then return front end
+
+    local radius = math.min(Kit.px(4), step)
+    front.overlap_offset = { 0, layers * step }
+    return OverlapGroup:new{
+        dimen = Geom:new{ w = size.w, h = size.h + layers * step },
+        allow_mirroring = false,
+        Kit.Drawn:new{
+            width = size.w, height = size.h,
+            draw = function(bb, x, y)
+                for i, shade in ipairs(SHELF_LAYERS) do
+                    local inset = math.floor(size.w * 0.075 * (layers - i + 1))
+                    bb:paintRoundedRect(x + inset, y + (i - 1) * step,
+                        size.w - 2 * inset, size.h, shade, radius)
+                end
+            end,
+        },
+        front,
+    }
+end
+
+local function cover_box(item, w, h, translucent_edge, progress_item, show_zero)
+    if item.kind == "bookshelf" then return shelf_cover(item, w, h, translucent_edge) end
     local cover = plain_cover(item, w, h, translucent_edge)
-    if item.card and item.card.state == "finished" then
-        local size = cover:getSize()
-        return ReadMark.over(cover, math.min(size.w, size.h))
+    local progress = progress_item or item
+    if progress.shelf == "finished" or (progress.card and progress.card.state == "finished") then
+        return ReadMark.over(cover)
+    end
+    local percent = percentage(progress)
+    if show_zero or (progress_item and percent > 0) then
+        return ReadMark.over(cover, percent)
     end
     return cover
 end
@@ -156,12 +205,13 @@ local function cover_slot(cover, width, height)
 end
 
 local function title_box(text, width, size, lines)
+    local face = Fonts.screen_face("body", size)
     return TextBoxWidget:new{
         text = text,
-        face = Kit.face(size),
+        face = face,
         bold = true,
         width = width,
-        height = math.floor(Kit.face(size).size * 1.3 * lines),
+        height = math.floor(face.size * 1.3 * lines),
         height_adjust = true,
         height_overflow_show_ellipsis = true,
     }
@@ -172,7 +222,7 @@ Library.fit_cover = plain_cover
 
 --- The picture at the right of a row, and what a tap on it does. A book of the library has its
 -- menu; a book found is added, then saved, and then has its menu too.
-function Library:rowButton(item, height)
+function Library:rowButton(item, height, compact)
     if not item.card then return nil end
     local status = self.book_status and self.book_status(item)
     local name, action
@@ -183,8 +233,7 @@ function Library:rowButton(item, height)
         name, action = "lock", function() self:onMenuSelect(item) end
     elseif item.adding or status == "saving" then
         name, action = "wait", function() end
-    elseif item.kind == "author" or item.kind == "series" or item.kind == "bookshelf"
-        or item.kind == "found_shelves" then
+    elseif Catalogue.is_collection_link(item) then
         name, action = "chevron.right", function() self:onMenuSelect(item) end
     elseif not item.found then
         name, action = "dots", menu
@@ -196,9 +245,10 @@ function Library:rowButton(item, height)
         name, action = "plus", function() self.on_add(item) end
     end
     return Kit.icon_button(name, height, action, {
-        width = Kit.px(ROW_BUTTON_W),
+        width = Kit.px(compact and 32 or ROW_BUTTON_W),
         edge = "right",
-        icon_size = Kit.px(ROW_ICON),
+        margin = compact and Kit.px(4) or nil,
+        icon_size = Kit.px(compact and 20 or ROW_ICON),
     })
 end
 
@@ -213,7 +263,7 @@ function Library:row(item, width, height)
         title_box(item.title or item.text, text_w, 19, 2),
     }
     if item.authors and item.authors ~= "" then
-        lines[#lines + 1] = Kit.text(item.authors, 15, { color = Kit.paper_muted, max_width = text_w })
+        lines[#lines + 1] = screen_text("body", item.authors, 15, { color = Kit.paper_muted, max_width = text_w })
     end
     local state = {}
     -- A book of the feed may well be in the library.
@@ -224,7 +274,8 @@ function Library:row(item, width, height)
     if item.whole then state[#state + 1] = "скачана" end
     if #state > 0 then
         lines[#lines + 1] = Kit.gap(Kit.px(4))
-        lines[#lines + 1] = Kit.text(table.concat(state, " · "), 15, { color = Kit.paper_muted })
+        lines[#lines + 1] = screen_text("body", table.concat(state, " · "), 15,
+            { color = Kit.paper_muted, max_width = text_w })
     end
     local row = Kit.Tappable:new{
         callback = function() self:onMenuSelect(item) end,
@@ -255,21 +306,11 @@ function Library:inLibrary(item)
     return self.owned[item.card.book.uuid]
 end
 
-local HEADER_H, FOOTER_H, SEARCH_H, ROW_H = 60, 56, 56, 100
-local DESIGN_HEADER_H, DESIGN_PAGER_H = 80, 76
+local SEARCH_H, ROW_H = 56, 100
 local STRIP_HEADING_H = 32
 local CARD_LABEL_H, GRID_GAP = 66, 8
+local CARD_LINE_H, CARD_ACTION_H, CARD_ACTION_GAP = 18, 22, 5
 local FEED_SECTIONS = 3
-
-local function screen_text(style, text, size, opts)
-    opts = opts or {}
-    opts.face = Fonts.screen_face(style, size)
-    return Kit.text(text, size, opts)
-end
-
-local function percentage(item)
-    return math.floor(math.max(0, math.min(100, item.percent or 0)))
-end
 
 function Library:bottomBar(width, selected, on_select, on_read)
     local item = not self.on_sign_in and Shelves.list(self.item_table or {}, "reading")[1]
@@ -311,37 +352,39 @@ local function cover_columns(width, count, gap)
     return math.max(1, math.floor((width - (count - 1) * gap) / count))
 end
 
-local function cover_with_progress(item, cover)
-    local size = cover:getSize()
-    local width, height = size.w, size.h
-    local badge_w, badge_h = math.min(width, Kit.px(35)), math.min(height, Kit.px(20))
-    local text_w, text_h = math.floor(badge_w * 31 / 35), math.floor(badge_h * 16 / 20)
-    local label = screen_text("body", percentage(item) .. "%", 11,
-        { color = Kit.paper_muted, max_width = text_w })
-    local badge = OverlapGroup:new{
-        dimen = Geom:new{ w = badge_w, h = badge_h },
-        overlap_offset = { width - badge_w, height - badge_h },
-        allow_mirroring = false,
-        ImageWidget:new{ file = PROGRESS_BADGE, width = badge_w, height = badge_h, alpha = true, is_icon = true },
-        CenterContainer:new{
-            dimen = Geom:new{ w = text_w, h = text_h },
-            overlap_offset = { badge_w - text_w, badge_h - text_h },
-            label,
-        },
-    }
-    return OverlapGroup:new{ dimen = Geom:new{ w = width, h = height },
-        allow_mirroring = false, cover, badge }
+local function card_label_height(mode)
+    if mode == "shelf" then
+        return Kit.px(CARD_ACTION_GAP) + Kit.px(CARD_ACTION_H) + 2 * Kit.px(CARD_LINE_H)
+    elseif mode == "collection" then
+        return Kit.px(CARD_LABEL_H + 12)
+    end
+    return Kit.px(CARD_LABEL_H)
 end
 
-local function card_labels(item, width)
-    local labels = VerticalGroup:new{ align = "left", Kit.gap(Kit.px(8)) }
-    if item.authors and item.authors ~= "" then
-        labels[#labels + 1] = screen_text("body", item.authors, 11,
-            { max_width = width, color = Kit.paper_muted })
+local function card_labels(item, width, button, show_collection_details)
+    local labels = VerticalGroup:new{ align = "left", Kit.gap(Kit.px(button and CARD_ACTION_GAP or 8)) }
+    local shelf = item.kind == "bookshelf"
+    local subtitle = shelf and item.kind_text or item.authors
+    local meta
+    if subtitle and subtitle ~= "" then
+        local text_w = button and width - button:getSize().w - Kit.px(4) or width
+        meta = screen_text("body", subtitle, 11, { max_width = text_w, color = Kit.paper_muted })
     end
+    if button then
+        -- Keep the action by the subtitle, with a separate tap target within the column.
+        local height = button:getSize().h
+        local row = OverlapGroup:new{
+            dimen = Geom:new{ w = width, h = height },
+            allow_mirroring = false,
+            RightContainer:new{ dimen = Geom:new{ w = width, h = height }, button },
+        }
+        if meta then row[2] = LeftContainer:new{ dimen = Geom:new{ w = meta:getSize().w, h = height }, meta } end
+        meta = row
+    end
+    if meta and not shelf then labels[#labels + 1] = meta end
     if item.title and item.title ~= "" then
         local face = Fonts.screen_face("body", 14)
-        local line = Kit.px(19)
+        local line = Kit.px(CARD_LINE_H)
         labels[#labels + 1] = TextBoxWidget:new{
             text = (item.title:gsub("[\r\n]+", " ")),
             face = face,
@@ -352,6 +395,16 @@ local function card_labels(item, width)
             height_overflow_show_ellipsis = true,
         }
     end
+    if meta and shelf then labels[#labels + 1] = meta end
+    if show_collection_details then
+        local detail = item.kind_text
+        if item.unavailable and item.mandatory then
+            detail = detail and detail .. " · " .. item.mandatory or item.mandatory
+        end
+        if detail then
+            labels[#labels + 1] = screen_text("body", detail, 11, { max_width = width, color = Kit.paper_muted })
+        end
+    end
     return labels
 end
 
@@ -361,7 +414,8 @@ function Library:coverRow(books, width, max_height, columns, mode, first, gap)
     local cover_w = cover_columns(width, columns, gap)
     local row = HorizontalGroup:new{ align = "top" }
     local last = math.min(#books, first + columns - 1)
-    local labels_h = mode == "details" and Kit.px(CARD_LABEL_H) or 0
+    local with_actions = mode == "shelf"
+    local labels_h = (mode == "details" or mode == "collection" or with_actions) and card_label_height(mode) or 0
     for i = first, last do
         local item = books[i]
         -- Each column gets its share of any rounding left over by the division.
@@ -369,22 +423,30 @@ function Library:coverRow(books, width, max_height, columns, mode, first, gap)
         local previous = math.floor((i - first - 1) * (width + gap) / columns)
         if i > first then row[#row + 1] = HorizontalSpan:new{ width = x - previous - cover_w } end
         local height_limit = item.cover and max_height or math.min(max_height, math.floor(cover_w * 1.45 + 0.5))
-        local cover = cover_box(item, cover_w, height_limit, true)
-        if mode == "reading" then cover = cover_with_progress(item, cover) end
+        local progress = mode == "shelf" and (not item.found and item
+            or (not item.kind and item.card and self:inLibrary(item))) or nil
+        local cover = cover_box(item, cover_w, height_limit, true, progress, mode == "reading")
         local h = cover:getSize().h
         local cell = VerticalGroup:new{ align = "left", Kit.gap(max_height - h), cover_slot(cover, cover_w, h) }
         if labels_h > 0 then
-            local labels = card_labels(item, cover_w)
+            local button = with_actions and item.kind ~= "bookshelf" and
+                self:rowButton(item, Kit.px(CARD_ACTION_H), true)
+            if button then self.row_buttons[item] = button end
+            local labels = card_labels(item, cover_w, button, mode == "collection")
             cell[3] = labels
             cell[4] = Kit.gap(math.max(0, labels_h - labels:getSize().h))
         end
-        row[#row + 1] = Kit.Tappable:new{
+        local tile = Kit.Tappable:new{
             callback = function()
-                if mode == "reading" then self:onMenuSelect(item)
+                if mode == "reading" or mode == "shelf"
+                    or (mode == "collection" and (item.unavailable or Catalogue.is_collection_link(item))) then
+                    self:onMenuSelect(item)
                 else self.on_book_details(item) end
             end,
             cell,
         }
+        row[#row + 1] = tile
+        if with_actions and item.kind == "bookshelf" then self.row_buttons[item] = tile end
         self.rows[#self.rows + 1] = item
     end
     return row
@@ -532,16 +594,15 @@ function Library.relatedRow(books, width, available, on_book_details)
         columns, "details", 1, gap)
 end
 
-function Library:sectionBody(width, area, related)
-    local books = related and related.items or self.section.items
+function Library:sectionBody(width, area, books, mode, state, empty_text)
     local columns, gap, ideal_h = section_cover_size(width)
-    local rows = area >= 2 * Kit.px(CARD_LABEL_H + 52) + Kit.px(20) and 2 or 1
+    local labels_h, row_gap = card_label_height(mode), Kit.px(20)
+    local rows = area >= 2 * (labels_h + Kit.px(52)) + row_gap and 2 or 1
     local cover_h = math.max(1, math.min(ideal_h,
-        math.floor((area - (rows - 1) * Kit.px(20)) / rows) - Kit.px(CARD_LABEL_H)))
+        math.floor((area - (rows - 1) * row_gap) / rows) - labels_h))
     local per_page = rows * columns
-    self.shown = #books
     self.total_pages = math.max(1, math.ceil(#books / per_page))
-    if related and not related.finished and (#books % per_page == 0 or related.failed) then
+    if state and #books > 0 and not state.finished and (#books % per_page == 0 or state.failed) then
         self.total_pages = self.total_pages + 1
     end
     self.page = math.max(1, math.min(self.page, self.total_pages))
@@ -550,62 +611,23 @@ function Library:sectionBody(width, area, related)
     for n = 0, rows - 1 do
         local start = first + n * columns
         if start > #books then break end
-        if n > 0 then body[#body + 1] = Kit.gap(Kit.px(20)) end
-        body[#body + 1] = self:coverRow(books, width, cover_h, columns, "details", start, gap)
+        if n > 0 then body[#body + 1] = Kit.gap(row_gap) end
+        body[#body + 1] = self:coverRow(books, width, cover_h, columns, mode, start, gap)
     end
-    if related and #body == 0 then
+    if #body == 0 then
         local box = Geom:new{ w = width, h = math.max(1, area) }
-        if related.failed then
-            self.retry_button = Kit.button(retry_label(related.failed, width), width, box.h, function()
-                self.on_catalogue(related)
+        if state and state.failed then
+            self.retry_button = Kit.button(retry_label(state.failed, width), width, box.h, function()
+                self.on_catalogue(state)
                 self:refreshScreen()
             end)
             return self.retry_button
         end
         return CenterContainer:new{ dimen = box,
-            Kit.text(related.finished and "Список пуст" or "Загружаю…", 18, { color = Blitbuffer.COLOR_DARK_GRAY }) }
+            Kit.text(state and not state.finished and "Загружаю…" or empty_text, 18,
+                { color = Blitbuffer.COLOR_DARK_GRAY, max_width = width }) }
     end
     return body
-end
-
-local function page_arrow(icon, width, height, action)
-    local image = Kit.icon(icon, Kit.px(24), { alpha = true })
-    if not action then
-        return Kit.rounded(image, width, height)
-    end
-    return Kit.round_button(image, width, height, action)
-end
-
-function Library:sectionPager(width, height)
-    local pill_h = Kit.px(56)
-    local pill_w = math.min(Kit.px(120), math.floor(width / 4))
-    local first_w = math.min(pill_h, math.floor(width / 8))
-    local offset = math.min(Kit.px(10), math.floor(width / 20))
-    local arrow_x = first_w + offset
-    local box = Geom:new{ w = width, h = height }
-    self.prev_button = page_arrow("chevron.left", pill_w, pill_h,
-        self.page > 1 and function() self:turn(-1) end or nil)
-    self.next_button = page_arrow("chevron.right", pill_w, pill_h,
-        self.page < self.total_pages and function() self:turn(1) end or nil)
-    local row = OverlapGroup:new{
-        dimen = box:copy(),
-        allow_mirroring = false,
-        CenterContainer:new{ dimen = box:copy(), screen_text("number", tostring(self.page), 36) },
-    }
-    local function at(w, x, widget)
-        return CenterContainer:new{ dimen = Geom:new{ w = w, h = height }, overlap_offset = { x, 0 }, widget }
-    end
-    row[2] = at(pill_w, arrow_x, self.prev_button)
-    row[3] = at(pill_w, width - arrow_x - pill_w, self.next_button)
-    self.first_button = nil
-    if self.page > 1 then
-        self.first_button = Kit.round_button(HorizontalGroup:new{ align = "center",
-            Kit.icon("chevron.left", Kit.px(18), { alpha = true }),
-            Kit.icon("chevron.left", Kit.px(18), { alpha = true }),
-        }, first_w, pill_h, function() self:turn(1 - self.page) end)
-        row[4] = at(first_w, 0, self.first_button)
-    end
-    return row
 end
 
 --- A box to tap for typing (see SearchBox), and a way to drop what was searched for.
@@ -613,19 +635,21 @@ function Library:searchBar(width)
     local height = Kit.px(44)
     local clear_w = self.query and height or 0
     local icon = Kit.px(26)
-    local text_w = width - clear_w - icon - Kit.px(32)
+    local border = Kit.px(1)
+    local left, gap, right = Kit.px(14), Kit.px(10), Kit.px(8)
+    local text_w = width - clear_w - 2 * border - icon - left - gap - right
     local box = FrameContainer:new{
-        bordersize = Kit.px(1),
+        bordersize = border,
         radius = math.floor(height / 2),
         color = Blitbuffer.COLOR_DARK_GRAY,
         padding = 0,
         LeftContainer:new{
-            dimen = Geom:new{ w = width - clear_w - 2 * Kit.px(1), h = height - 2 * Kit.px(1) },
+            dimen = Geom:new{ w = width - clear_w - 2 * border, h = height - 2 * border },
             HorizontalGroup:new{ align = "center",
-                HorizontalSpan:new{ width = Kit.px(14) },
+                HorizontalSpan:new{ width = left },
                 Kit.icon("tab.search", icon),
-                HorizontalSpan:new{ width = Kit.px(10) },
-                Kit.text(self.query or "Поиск", 17, {
+                HorizontalSpan:new{ width = gap },
+                screen_text("body", self.query or "Поиск", 17, {
                     color = not self.query and Blitbuffer.COLOR_DARK_GRAY or nil,
                     max_width = text_w,
                 }),
@@ -644,28 +668,6 @@ function Library:searchBar(width)
         row[2] = self.clear_button
     end
     return CenterContainer:new{ dimen = Geom:new{ w = width, h = Kit.px(SEARCH_H) }, row }
-end
-
-function Library:listBody(width, area)
-    local books = Shelves.list(self.item_table, self.view, self.query)
-    self.shown = #books
-    local row_h = Kit.px(ROW_H)
-    local per_page = math.max(1, math.floor(area / row_h))
-    self.total_pages = math.max(1, math.ceil(#books / per_page))
-    self.page = math.max(1, math.min(self.page, self.total_pages))
-    local body = VerticalGroup:new{ align = "left" }
-    if #books == 0 then
-        body[1] = CenterContainer:new{
-            dimen = Geom:new{ w = width, h = area },
-            Kit.text(self.query and "Ничего не нашлось" or "Здесь пока пусто", 18, { color = Blitbuffer.COLOR_DARK_GRAY }),
-        }
-    end
-    local start = (self.page - 1) * per_page + 1
-    for i = start, math.min(#books, start + per_page - 1) do
-        body[#body + 1] = self:row(books[i], width, row_h)
-        self.rows[#self.rows + 1] = books[i]
-    end
-    return body
 end
 
 --- What was found, with the next books asked for before the list runs out of them.
@@ -698,12 +700,7 @@ function Library:catalogueBody(width, area, state)
             body[1] = CenterContainer:new{ dimen = box, self.retry_button }
         else
             local text = "Ничего не нашлось"
-            if state.kind == "bookshelves" then
-                text = state.finished and "Полок пока нет" or "Загружаю…"
-            elseif state.kind then
-                local nothing = self:ownShelf() and "На полке пока нет книг" or "Здесь нет книг, которые можно читать"
-                text = state.finished and nothing or "Загружаю…"
-            elseif not state.query then text = "Введите название или автора"
+            if not state.query then text = "Введите название или автора"
             elseif not state.finished then text = #books == 0 and "Ищу…" or "Загружаю…" end
             body[1] = CenterContainer:new{ dimen = box, Kit.text(text, 18, { color = Blitbuffer.COLOR_DARK_GRAY }) }
         end
@@ -715,16 +712,17 @@ function Library:build()
     local W, H = self.dimen.w, self.dimen.h
     local view = self.view
     local home, in_feed, in_search = view == "home", view == "feed", view == "catalogue"
-    local section = view == "feed_section"
-    local related = view == "collection" and self.collection.kind == "related" and self.collection or nil
-    local grid = section or related
+    local collection = view == "collection" and self.collection or nil
+    local local_shelf = Shelves.name(view)
+    local shelf_index = collection and (collection.kind == "bookshelves" or collection.kind == "found_shelves")
+    local remote_shelf = collection and collection.kind == "bookshelf"
+    local grid = collection or local_shelf
+    local shelf_grid = local_shelf or shelf_index or remote_shelf
     local top_level = home or in_feed or in_search
-    local redesigned = top_level or grid
-    local pad = Kit.px(redesigned and 20 or 16)
+    local pad = Kit.px(Kit.PAGE_PAD)
     local inner = W - 2 * pad
-    local row_h = Kit.px(redesigned and DESIGN_HEADER_H or HEADER_H)
-    local footer_h = Kit.px((in_feed or grid) and DESIGN_PAGER_H or FOOTER_H)
-    local header_h = Status.height() + row_h
+    local footer_h = Kit.px(Kit.PAGE_PAGER_H)
+    local header_h = Status.height() + Kit.px(Kit.PAGE_HEADER_H)
     self.item_table = self.item_table or {}
     self.rows, self.strips, self.shelf_rows = {}, {}, {}
     self.row_buttons = {}
@@ -741,7 +739,7 @@ function Library:build()
     self.search_pad = pad
     local body_top = self.search_top
     local free = H - body_top - bottom_h
-    local body, search_bar
+    local body, search_bar, grid_title, grid_count
     if self.on_sign_in then
         body = Kit.button(Kit.text("Войти в Яндекс", 22, { bold = true }), inner, free, self.on_sign_in)
     elseif in_search then
@@ -749,10 +747,31 @@ function Library:build()
         body_top = body_top + Kit.px(SEARCH_H)
         body = self:catalogueBody(inner, H - body_top - bottom_h - footer_h, self.catalogue)
     elseif grid then
+        local books, empty_text, mode
+        if local_shelf then
+            search_bar = self:searchBar(inner)
+            body_top = body_top + Kit.px(SEARCH_H)
+            books = Shelves.list(self.item_table, view, self.query)
+            grid_title, grid_count = local_shelf, #books
+            empty_text = self.query and "Ничего не нашлось" or self.message or "Здесь пока пусто"
+        else
+            books = collection.items
+            grid_title = collection.title
+            local total = remote_shelf and collection.shelf and tonumber(collection.shelf.books_count)
+            if shelf_grid then grid_count = total or #books end
+            if shelf_index then
+                empty_text = "Полок пока нет"
+            elseif remote_shelf then
+                empty_text = self:ownShelf() and "На полке пока нет книг" or "Здесь нет книг, которые можно читать"
+            elseif collection.kind == "feed_section" or collection.kind == "related" then
+                mode, empty_text = "details", "Здесь пока пусто"
+            else
+                mode, empty_text = "collection", "Здесь нет книг, которые можно читать"
+            end
+        end
         body_top = body_top + Kit.px(12)
-        body = self:sectionBody(inner, H - body_top - bottom_h - footer_h, related)
-    elseif view == "collection" then
-        body = self:catalogueBody(inner, free - footer_h, self.collection)
+        body = self:sectionBody(inner, H - body_top - bottom_h - footer_h, books,
+            shelf_grid and "shelf" or mode, collection, empty_text)
     elseif in_feed then
         body = self:feedBody(inner, free - footer_h)
     elseif #self.item_table == 0 then
@@ -761,17 +780,12 @@ function Library:build()
             Kit.text(self.message or "Загружаю библиотеку…", 18,
                 { color = Blitbuffer.COLOR_DARK_GRAY, max_width = inner }),
         }
-    elseif home then
-        body = self:homeBody(inner, free)
     else
-        search_bar = self:searchBar(inner)
-        body_top = body_top + Kit.px(SEARCH_H)
-        body = self:listBody(inner, H - body_top - bottom_h - footer_h)
+        body = self:homeBody(inner, free)
     end
 
     self.back_button, self.search_button, self.upload_button, self.sync_button, self.shelf_button = nil, nil, nil, nil, nil
     local header_row
-    local box = Geom:new{ w = W, h = row_h }
     local side = Kit.px(56)
     local icon_side = Kit.px(24)
     if top_level then
@@ -801,52 +815,19 @@ function Library:build()
                 function() self:openSearch() end, in_search)
             actions[#actions + 1] = self.search_button
         end
-        actions[#actions + 1] = HorizontalSpan:new{ width = pad }
-        header_row = OverlapGroup:new{
-            dimen = box:copy(),
-            allow_mirroring = false,
-            LeftContainer:new{ dimen = box:copy(),
-                HorizontalGroup:new{ align = "center",
-                    HorizontalSpan:new{ width = pad },
-                    screen_text("heading", title, 38, { max_width = W - actions:getSize().w - pad - Kit.px(8) }),
-                },
-            },
-            RightContainer:new{ dimen = box:copy(), actions },
-        }
-    elseif grid then
-        self.back_button = Kit.round_button(Kit.icon("chevron.left", icon_side, { alpha = true }), side, side,
-            function() self:goBack() end)
-        header_row = OverlapGroup:new{
-            dimen = box:copy(),
-            allow_mirroring = false,
-            CenterContainer:new{ dimen = box:copy(),
-                screen_text("heading", related and related.title or self.section.name, 38,
-                    { max_width = W - 2 * (side + pad + Kit.px(8)) }) },
-            CenterContainer:new{ dimen = Geom:new{ w = side, h = row_h }, overlap_offset = { pad, 0 }, self.back_button },
-        }
+        header_row = Kit.page_header(W, title, nil, #actions > 0 and actions or nil)
     else
-        self.back_button = Kit.icon_button("chevron.left", side, function() self:goBack() end, { edge = "left", margin = pad })
-        local title = view == "collection" and self.collection.title
-            or ("%s · %d"):format(Shelves.name(view), self.shown or 0)
-        header_row = HorizontalGroup:new{ align = "center",
-            Kit.fixed(self.back_button, side),
-            CenterContainer:new{
-                dimen = Geom:new{ w = W - 2 * side, h = row_h },
-                Kit.text(title, 20, { bold = true, max_width = W - 2 * side }),
-            },
-        }
-        local list = view == "collection" and self.collection
-        if list and list.kind == "bookshelves" then
-            self.shelf_button = Kit.icon_button("plus", side, function() self.on_new_shelf() end,
-                { edge = "right", margin = pad })
-        elseif list and list.kind == "bookshelf" and list.shelf then
-            self.shelf_button = Kit.icon_button("dots", side, function() self.on_shelf_menu(list) end,
-                { edge = "right", margin = pad })
+        if collection and collection.kind == "bookshelves" then
+            self.shelf_button = Kit.round_button(Kit.icon("plus", icon_side, { alpha = true }),
+                side, side, self.on_new_shelf)
+        elseif remote_shelf and collection.shelf then
+            self.shelf_button = Kit.round_button(Kit.icon("dots", icon_side, { alpha = true }),
+                side, side, function() self.on_shelf_menu(collection) end)
         end
-        if self.shelf_button then header_row[3] = Kit.fixed(self.shelf_button, side) end
+        header_row, self.back_button = Kit.page_header(W, grid_title, function() self:goBack() end,
+            self.shelf_button, grid_count)
     end
     local header = VerticalGroup:new{ align = "left", overlap_offset = { 0, 0 }, Status:new{ width = W }, header_row }
-    if not redesigned then header[3] = Kit.line(W) end
 
     local frame = OverlapGroup:new{
         dimen = self.dimen:copy(),
@@ -861,12 +842,8 @@ function Library:build()
     self.prev_button, self.next_button, self.first_button = nil, nil, nil
     if self.total_pages > 1 then
         local pager
-        if in_feed or grid then
-            pager = self:sectionPager(inner, footer_h)
-        else
-            pager, self.prev_button, self.next_button = Kit.pager(self.page, self.total_pages, inner, footer_h,
-                function(delta) self:turn(delta) end)
-        end
+        pager, self.prev_button, self.next_button, self.first_button = Kit.pager(self.page, self.total_pages, inner,
+            footer_h, function(delta) self:turn(delta) end)
         frame[#frame + 1] = FrameContainer:new{ bordersize = 0, padding = 0,
             overlap_offset = { pad, H - bottom_h - footer_h }, pager }
     end
@@ -878,7 +855,7 @@ function Library:build()
     if in_feed then self.feed_page = self.page end
     local place = self.place
     place.view, place.query, place.page = self.view, self.query, self.page
-    place.feed, place.section, place.feed_page = self.feed, self.section, self.feed_page
+    place.feed, place.feed_page = self.feed, self.feed_page
     place.collection, place.trail = self.collection, self.trail
 end
 
@@ -887,7 +864,7 @@ function Library:currentTab()
     -- A list belongs where it was opened from.
     local view = self.trail[1] and self.trail[1].view or self.view
     if view == "catalogue" then return "search" end
-    if view == "feed" or view == "feed_section" then return "feed" end
+    if view == "feed" then return "feed" end
     return "library"
 end
 
@@ -905,7 +882,8 @@ end
 --- Coming to the feed finds it as it was left; a tap on its tab while in it goes to its start.
 function Library:openFeed()
     if self.on_sign_in then return self:show("feed") end
-    local page = self.view ~= "feed" and self.view ~= "feed_section" and self.feed_page or 1
+    local in_feed = self.view == "feed" or (self.view == "collection" and self.collection.kind == "feed_section")
+    local page = in_feed and 1 or self.feed_page
     local first_time = not self.feed
     if first_time then self.feed = self.load_feed() end
     self:show("feed", nil, page)
@@ -925,12 +903,11 @@ end
 
 --- A section of the feed as a paginated cover grid.
 function Library:openSection(section)
-    self.section = section
-    self:show("feed_section")
+    self:openCollection(Catalogue.collection("feed_section", nil, section.name, section.items))
     self.on_covers(Catalogue.cards(section.items))
 end
 
---- A series, an author or a serial, on a screen of its own. Back leads to where it was opened from.
+--- Back leads to the screen and page where the collection was opened.
 function Library:openCollection(state, on_back)
     table.insert(self.trail, { view = self.view, query = self.query, page = self.page,
         collection = self.collection, on_back = on_back })
@@ -969,9 +946,6 @@ function Library:goBack()
         self.collection = back.collection
         self:show(back.view, back.query, back.page)
         if back.on_back then back.on_back() end
-    elseif self.view == "feed_section" then
-        self.section = nil
-        self:show("feed", nil, self.feed_page)
     else
         self:goHome()
     end
@@ -1022,13 +996,13 @@ end
 function Library:search(query)
     query = query:match("^%s*(.-)%s*$")
     query = query ~= "" and query or nil
-    if self.view == "home" or self.view == "feed" or self.view == "feed_section" or self.view == "catalogue" then
+    if Shelves.name(self.view) then
+        self:show(self.view, query)
+    else
         self.catalogue = Catalogue.new(query)
         self.place.catalogue = self.catalogue
         self:show("catalogue", query)
         if not query then self:showSearch() end -- the box comes empty, to type anew
-    else
-        self:show(self.view, query)
     end
 end
 

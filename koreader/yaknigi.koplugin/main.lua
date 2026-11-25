@@ -4,14 +4,10 @@ Yandex Books: sign in, browse the library and read, with books opening at once.
 @module koplugin.yaknigi
 --]]
 
-local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
-local InfoMessage = require("ui/widget/infomessage")
-local MultiConfirmBox = require("ui/widget/multiconfirmbox")
 local ReaderUI = require("apps/reader/readerui")
 local InputDialog = require("ui/widget/inputdialog")
-local Notification = require("ui/widget/notification")
 local LuaSettings = require("luasettings")
 local NetworkMgr = require("ui/network/manager")
 local Screen = require("device").screen
@@ -34,6 +30,7 @@ local FilePicker = require("yaknigi/filepicker")
 local Library = require("yaknigi/library")
 local Login = require("yaknigi/login")
 local NoAccess = require("yaknigi/noaccess")
+local Notice = require("yaknigi/notice")
 local NoteSync = require("yaknigi/notesync")
 local NotesLocal = require("yaknigi/notes_local")
 local Prefs = require("yaknigi/prefs")
@@ -161,9 +158,7 @@ local function save_token(token)
     s:flush()
 end
 
-local function message(text, timeout)
-    UIManager:show(InfoMessage:new{ text = text, timeout = timeout })
-end
+local message, toast = Notice.message, Notice.toast
 
 local function opening_text(card)
     local title = card and card.book and card.book.title
@@ -183,7 +178,7 @@ local function install_opening_message(ReaderUI)
             UIManager.show = function(manager, widget, ...)
                 UIManager.show = show
                 widget:free()
-                return show(manager, InfoMessage:new{ text = opening_message, timeout = 0.0 }, ...)
+                return show(manager, Notice.busy(opening_message, 0), ...)
             end
         end
         return show_coroutine(this, file, provider, seamless)
@@ -221,7 +216,7 @@ function Yaknigi:showLogin()
     local verifier = Crypt.new_verifier()
     local url = Api.login_url(verifier)
     if not url then
-        UIManager:show(InfoMessage:new{ text = "В этой сборке нет идентификатора приложения Яндекса: войти нельзя." })
+        message("В этой сборке нет идентификатора приложения Яндекса: войти нельзя.")
         return
     end
     local dialog, login
@@ -297,20 +292,17 @@ end
 
 local function sorted_cards(cards)
     -- Latest read here or elsewhere first; books never opened go last.
-    local function stamp(c)
-        local _, here = reading_here(c)
-        return math.max(tonumber(c.accessed_at) or 0, here or 0)
-    end
     local ordered = {}
-    for i, c in ipairs(cards) do ordered[i] = { card = c, index = i } end
+    for i, card in ipairs(cards) do
+        local progress, time = reading_here(card)
+        ordered[i] = { card = card, index = i, progress = progress,
+            time = math.max(tonumber(card.accessed_at) or 0, time or 0) }
+    end
     table.sort(ordered, function(a, b)
-        local sa, sb = stamp(a.card), stamp(b.card)
-        if sa ~= sb then return sa > sb end
+        if a.time ~= b.time then return a.time > b.time end
         return a.index < b.index
     end)
-    local out = {}
-    for i, o in ipairs(ordered) do out[i] = o.card end
-    return out
+    return ordered
 end
 
 local function is_whole(card)
@@ -342,8 +334,8 @@ end
 
 function Yaknigi:libraryItems(cards)
     local items = {}
-    for _, card in ipairs(sorted_cards(without_episodes(cards))) do
-        local here = reading_here(card)
+    for _, entry in ipairs(sorted_cards(without_episodes(cards))) do
+        local card, here = entry.card, entry.progress
         local progress = here or tonumber(card.progress)
         local title = card.book and card.book.title or "?"
         local serial = card.book and card.book.source_type == "serial"
@@ -368,7 +360,7 @@ function Yaknigi:libraryItems(cards)
 end
 
 function Yaknigi:fetchCovers(cards)
-    if not NetworkMgr:isOnline() then return end
+    if not NetworkMgr:isConnected() then return end
     -- What was asked last is what is being looked at: it goes first, and all that was under
     -- way starts again behind it. A library's covers must not hold up a search's.
     local queue, seen = {}, {}
@@ -397,7 +389,7 @@ end
 local function fetch_full_cover(uuid, known, on_ready)
     local cover = Covers.find_best(COVERS, uuid)
     if cover then return on_ready(cover) end
-    if not NetworkMgr:isOnline() then return end
+    if not NetworkMgr:isConnected() then return end
     local waiting = full_cover_downloads[uuid]
     if waiting then
         waiting[#waiting + 1] = on_ready
@@ -428,13 +420,12 @@ function Yaknigi:scheduleCoverPoll(pids)
         if pids ~= self.covers_pids or not self.library then return end
         local library = self.library
         local done = Covers.done(pids)
-        local view = library.view
-        local apart = view == "catalogue" or view == "collection" or view == "feed" or view == "feed_section"
         -- Only what is on the screen is worth redrawing it.
         local shown = {}
         for _, item in ipairs(library.rows or {}) do shown[item] = true end
         local changed = false
         local function look(item, matters)
+            if Covers.is_list_cover(item.cover) then return end
             local cover = Covers.find(COVERS, item.card)
             if cover and cover ~= item.cover then
                 item.cover = cover
@@ -443,7 +434,7 @@ function Yaknigi:scheduleCoverPoll(pids)
             end
         end
         for _, item in ipairs(library.item_table or {}) do
-            look(item, not apart or item == library.dock_item)
+            look(item, shown[item] or item == library.dock_item)
         end
         if library.catalogue then
             for _, item in ipairs(library.catalogue.items) do look(item, shown[item]) end
@@ -473,8 +464,9 @@ function Yaknigi:scheduleCoverPoll(pids)
 end
 
 function Yaknigi:signOut()
-    UIManager:show(ConfirmBox:new{
-        text = "Выйти из аккаунта Яндекса?",
+    UIManager:show(Notice.confirm{
+        title = "Выйти из аккаунта Яндекса?",
+        ok_text = "Выйти",
         ok_callback = function()
             save_token(nil)
             library_place = {}
@@ -584,10 +576,6 @@ function Yaknigi:showLibrary(quiet)
                 item.cover = Covers.find(COVERS, item.card)
             end
             library:refreshScreen()
-            if library.view == "feed_section" then
-                local cards = Catalogue.cards(library.section.items)
-                UIManager:nextTick(function() self:fetchCovers(cards) end)
-            end
             -- Coming back to the feed: left for a book before it got here, it is asked anew.
             if library.view == "feed" then UIManager:nextTick(function() library:askForMore() end) end
         end
@@ -630,8 +618,8 @@ end
 --- Asks once a day, on starting, with the network already up: never turns the Wi-Fi on for this.
 function Yaknigi:autoUpdate()
     if not Updater.checks() or updating then return end
-    if not AppState:nilOrTrue("check_updates") or not NetworkMgr:isOnline() then return end
-    if Updater.due(AppState:readSetting("update_checked"), os.time()) then
+    if not AppState:nilOrTrue("check_updates") then return end
+    if Updater.due(AppState:readSetting("update_checked"), os.time()) and NetworkMgr:isConnected() then
         self:checkUpdates(false)
     end
 end
@@ -643,7 +631,7 @@ function Yaknigi:checkUpdates(tell)
         NetworkMgr:runWhenOnline(function() self:checkUpdates(true) end)
         return
     end
-    if tell then UIManager:show(Notification:new{ text = "Проверяем обновления" }) end
+    if tell then toast("Проверяем обновления", "wait") end
     self:updateStep(function() return Updater.check(UPDATE_DIR) end, function(result)
         self:updateChecked(result, tell)
     end)
@@ -667,22 +655,21 @@ function Yaknigi:updateChecked(result, tell)
         -- Said once, unless asked: there is nothing to do about it from here.
         AppState:saveSetting("update_skipped", version)
         AppState:flush()
-        UIManager:show(InfoMessage:new{
-            text = "Вышла версия " .. tostring(version) .. ". Её нужно установить заново вручную: "
-                .. "скачайте её на странице проекта на GitHub.",
-        })
+        message("Вышла версия " .. tostring(version) .. ". Её нужно установить заново вручную: "
+            .. "скачайте её на странице проекта на GitHub.")
     elseif tell and kind == "none" then
-        UIManager:show(InfoMessage:new{ text = "У вас последняя версия." })
+        message("У вас последняя версия.")
     elseif tell and kind ~= "available" then
-        UIManager:show(InfoMessage:new{ text = "Не удалось проверить обновления. Попробуйте позже." })
+        message("Не удалось проверить обновления. Попробуйте позже.")
     end
 end
 
 --- In someone's own KOReader nothing is downloaded: the plugin's folder is theirs to replace.
 function Yaknigi:tellNewPlugin(version)
-    UIManager:show(ConfirmBox:new{
+    UIManager:show(Notice.confirm{
         name = "YaknigiUpdateOffer",
-        text = "Вышла новая версия " .. version .. ", у вас " .. Updater.version() .. ". "
+        title = "Новая версия плагина",
+        text = "Версия " .. version .. ", у вас " .. Updater.version() .. ". "
             .. "Скачайте yaknigi.koplugin.zip на странице релизов проекта на GitHub и замените им "
             .. "папку yaknigi.koplugin в папке plugins KOReader.",
         ok_text = "Понятно", -- asked again at the next daily check
@@ -695,33 +682,37 @@ function Yaknigi:tellNewPlugin(version)
 end
 
 function Yaknigi:offerUpdate(manifest)
-    UIManager:show(MultiConfirmBox:new{
+    local function skip()
+        AppState:saveSetting("update_skipped", manifest.version)
+        AppState:flush()
+    end
+    local function update() self:downloadUpdate(manifest) end
+    UIManager:show(Notice.Panel:new{
         name = "YaknigiUpdateOffer",
-        text = "Вышла новая версия " .. manifest.version .. ", у вас " .. Updater.version() .. ". "
-            .. "Обновить? После загрузки приложение перезапустится.",
-        cancel_text = "Обновить",
-        cancel_callback = function() self:downloadUpdate(manifest) end,
-        choice1_text = "Напомнить позже",
-        choice1_callback = function() end, -- the next daily check
-        choice2_text = "Пропустить",
-        choice2_callback = function()
-            AppState:saveSetting("update_skipped", manifest.version)
-            AppState:flush()
-        end,
+        title = "Доступно обновление",
+        text = "Версия " .. manifest.version .. ", у вас " .. Updater.version() .. ". "
+            .. "После загрузки приложение перезапустится.",
+        actions = {
+            { { id = "update", text = "Обновить", callback = update, primary = true } },
+            {
+                { id = "later", text = "Напомнить позже" },
+                { id = "skip", text = "Пропустить", callback = skip },
+            },
+        },
     })
 end
 
 function Yaknigi:downloadUpdate(manifest)
     if updating then return end
-    local progress = InfoMessage:new{ text = "Загружаем версию " .. manifest.version .. "…" }
+    local progress = Notice.busy("Загружаем версию " .. manifest.version .. "…")
     UIManager:show(progress)
     self:updateStep(function() return Updater.download(UPDATE_DIR, manifest) end, function(result)
         UIManager:close(progress)
         if result.kind ~= "ready" then
-            UIManager:show(InfoMessage:new{ text = "Не удалось загрузить обновление. Попробуйте позже." })
+            message("Не удалось загрузить обновление. Попробуйте позже.")
         elseif ReaderUI.instance then
             -- A book was opened while it loaded. run.sh installs what waits at the next start.
-            UIManager:show(Notification:new{ text = "Версия " .. manifest.version .. " установится при следующем запуске" })
+            toast("Версия " .. manifest.version .. " установится при следующем запуске")
         else
             G_reader_settings:flush()
             Updater.apply()
@@ -762,7 +753,7 @@ function Yaknigi:refreshLibrary(tell_failure)
     end
     if tell_failure then
         NetworkMgr:runWhenOnline(start)
-    elseif NetworkMgr:isOnline() then
+    elseif NetworkMgr:isConnected() then
         start()
     elseif self.library then
         -- Offline: the header says so, and a tap on it tries again.
@@ -1030,7 +1021,7 @@ end
 function Yaknigi:openItem(item)
     if item.unavailable == Catalogue.UNAVAILABLE then return self:showNoAccess(item.title) end
     if item.unavailable then return message(item.unavailable, 3) end
-    if item.kind == "author" or item.kind == "series" or item.kind == "bookshelf" or item.kind == "found_shelves" then
+    if Catalogue.is_collection_link(item) then
         return self:openList(item.kind, item.uuid, item.list_title or item.title)
     end
     if item.found then self:openFound(item) else self:openCard(item.card) end
@@ -1081,7 +1072,7 @@ end
 
 --- Fetch the catalogue's current metadata and the first page of related books off the UI thread.
 function Yaknigi:loadBookDetails(card, state)
-    if state.loading or state.loaded or card.book.is_uploaded or not NetworkMgr:isOnline() then return end
+    if state.loading or state.loaded or card.book.is_uploaded or not NetworkMgr:isConnected() then return end
     local token = saved_token()
     if not token then return end
     local uuid = card.book.uuid
@@ -1273,7 +1264,7 @@ function Yaknigi:takeFound(item, screen)
     NetworkMgr:runWhenOnline(function()
         if self.taking then return end
         self.taking = true
-        local wait = InfoMessage:new{ text = opening_text(item.card) }
+        local wait = Notice.busy(opening_text(item.card))
         UIManager:show(wait)
         os.remove(TAKE_RESULT)
         local token, uuid, serial = saved_token(), item.card.book.uuid, serial_of_item(item)
@@ -1345,11 +1336,6 @@ end
 function Yaknigi:showCards(cards)
     if shown_library then shown_library:switchItemTable(nil, self:libraryItems(cards or read_json(LIBRARY_CACHE) or {})) end
     self:refreshBookCard()
-end
-
---- A word at the top of the screen, that goes by itself and does not get in the way.
-local function toast(text)
-    UIManager:show(Notification:new{ text = text })
 end
 
 local function quoted(title)
@@ -1514,7 +1500,7 @@ function Yaknigi:removeFromLibrary(card)
         if removing[id] then return end
         removing[id] = true
         self:refreshBookCard()
-        local wait = InfoMessage:new{ text = "Удаляю " .. quoted(card.book.title) .. "…" }
+        local wait = Notice.busy("Удаляю " .. quoted(card.book.title) .. "…")
         UIManager:show(wait)
         remove_requests = remove_requests + 1
         local path = REMOVE_RESULT .. remove_requests
@@ -1666,10 +1652,11 @@ function Yaknigi:showBookMenu(item)
     if card.uuid then
         entries[#entries + 1] = { key = "remove_library", text = "Удалить из библиотеки", icon = "trash",
             action = function()
-                UIManager:show(ConfirmBox:new{
+                UIManager:show(Notice.confirm{
+                    title = serial and "Удалить сериал?" or "Удалить книгу?",
                     text = serial
-                        and "Удалить " .. quoted(item.title) .. " из библиотеки со всеми эпизодами? Они исчезнут и в приложении на телефоне."
-                        or "Удалить " .. quoted(item.title) .. " из библиотеки? Она исчезнет и в приложении на телефоне.",
+                        and quoted(item.title) .. " исчезнет из библиотеки со всеми эпизодами, в том числе на телефоне."
+                        or quoted(item.title) .. " исчезнет из библиотеки, в том числе на телефоне.",
                     ok_text = "Удалить",
                     ok_callback = function() self:removeFromLibrary(card) end,
                 })
@@ -1801,7 +1788,7 @@ function Yaknigi:uploadFile(path)
             message(error_text("http"), 3)
             return
         end
-        if not picker then toast("Загружаю " .. title) end
+        if not picker then toast("Загружаю " .. title, "wait") end
         local function wait()
             if not ffiutil.isSubProcessDone(pid) then
                 UIManager:scheduleIn(0.5, wait)
@@ -1849,7 +1836,7 @@ end
 -- what done gets, or nothing and why: then the reader is told, and done is not called.
 function Yaknigi:shelfWork(text, work, done)
     NetworkMgr:runWhenOnline(function()
-        local busy = InfoMessage:new{ text = text }
+        local busy = Notice.busy(text)
         UIManager:show(busy)
         local token = saved_token()
         in_background(function()
@@ -1897,7 +1884,7 @@ end
 
 --- Says why a book does not open, after asking Yandex about the subscription.
 function Yaknigi:showNoAccess(title)
-    local busy = InfoMessage:new{ text = "Проверяю подписку…" }
+    local busy = Notice.busy("Проверяю подписку…")
     UIManager:show(busy)
     UIManager:forceRePaint()
     local token = saved_token()
@@ -1969,8 +1956,9 @@ function Yaknigi:showShelfMenu(state)
                 end)
             end },
             { key = "delete", text = "Удалить полку", icon = "trash", action = function()
-                UIManager:show(ConfirmBox:new{
-                    text = "Удалить полку " .. quoted(state.title) .. "? Она исчезнет и в приложении на телефоне. Книги останутся в библиотеке.",
+                UIManager:show(Notice.confirm{
+                    title = "Удалить полку?",
+                    text = quoted(state.title) .. " исчезнет и в приложении на телефоне. Книги останутся в библиотеке.",
                     ok_text = "Удалить",
                     ok_callback = function()
                         self:shelfWork("Удаляю полку…", function(api) return api:delete_shelf(state.uuid) end, function()
@@ -2136,7 +2124,7 @@ function Yaknigi:loadSerial(card)
         local result, progress = store.dir .. "/serial_load.tmp", store.dir .. "/serial_progress.tmp"
         os.remove(result)
         os.remove(progress)
-        local wait = InfoMessage:new{ text = opening_text(card) }
+        local wait = Notice.busy(opening_text(card))
         UIManager:show(wait)
         local token = saved_token()
         local pid = ffiutil.runInSubProcess(function()
@@ -2165,9 +2153,7 @@ function Yaknigi:pollSerial(job)
             -- Not with every episode: each word on e-ink is a redraw.
             if now and now.total > 1 and os.time() - job.shown_at >= 2 then
                 UIManager:close(job.wait)
-                job.wait = InfoMessage:new{
-                    text = opening_text(job.card) .. "\nэпизод " .. now.done .. " из " .. now.total,
-                }
+                job.wait = Notice.busy(opening_text(job.card) .. "\nэпизод " .. now.done .. " из " .. now.total)
                 UIManager:show(job.wait)
                 job.shown_at = os.time()
             end
@@ -2195,7 +2181,7 @@ function Yaknigi:pollSerial(job)
 end
 
 function Yaknigi:loadAndOpen(card, store)
-    local wait = InfoMessage:new{ text = opening_text(card) }
+    local wait = Notice.busy(opening_text(card))
     UIManager:show(wait)
     UIManager:forceRePaint()
 
@@ -2376,7 +2362,7 @@ function Yaknigi:chooseSleepCover(store)
     local best = Covers.find_best(COVERS, store.id)
     local cover = sleep_cover(store, best)
     if cover then Prefs.apply_sleep_screen(cover) end
-    if best or not NetworkMgr:isOnline() then return end
+    if best or not NetworkMgr:isConnected() then return end
     local card = not book_covers[store.id] and cached_card(store.id)
     local known = book_covers[store.id] or card and card.book.cover
     fetch_full_cover(store.id, known, function(arrived)
@@ -2421,23 +2407,32 @@ end
 
 function Yaknigi:startWorker(state, store)
     if state.pid and not ffiutil.isSubProcessDone(state.pid) then return end
-    if store:is_whole() then return end
+    if store:is_whole() or not NetworkMgr:isConnected() then return end
     local token = saved_token()
     if not token then return end
     state.pid = Background.start(store, token, state.target or 1, self.ui.document)
     logger.info("yaknigi: background worker", state.pid)
 end
 
-function Yaknigi:schedulePoll()
+function Yaknigi:schedulePoll(delay)
     if self.polling then return end
     self.polling = function() self:poll() end
-    UIManager:scheduleIn(POLL_SECONDS, self.polling)
+    UIManager:scheduleIn(delay or POLL_SECONDS, self.polling)
 end
 
 function Yaknigi:stopPoll()
     if self.polling then
         UIManager:unschedule(self.polling)
         self.polling = nil
+    end
+end
+
+function Yaknigi:onNetworkConnected()
+    local state = self.store and workers[self.store.id]
+    if self.polling and state and state.retry_at then
+        state.retry_at = os.time()
+        self:stopPoll()
+        self:schedulePoll()
     end
 end
 
@@ -2455,10 +2450,13 @@ function Yaknigi:poll()
     local top = UIManager:getTopmostVisibleWidget() or {}
     local reading = top.name == "ReaderUI"
     local running = state.pid and not ffiutil.isSubProcessDone(state.pid)
+    if not running then state.pid = nil end
+    local whole = not running and store:is_whole()
 
     -- The worker finished and rendered the whole book: switch to it. Its cache makes
     -- this as quick as turning a page, so no need to wait for the reader to be idle.
-    if not running and store:is_whole() and reading and next(state.stubs) then
+    if whole then
+        if not reading then return self:schedulePoll() end
         logger.info("yaknigi: swapping to the whole book")
         state.stubs = {}
         self.ui:reloadDocument(nil, true)
@@ -2495,13 +2493,17 @@ function Yaknigi:poll()
         end
     end
 
-    if not running and not store:is_whole() then
+    if not running then
         -- Stopped early, most likely because of the network; try again in a while.
         state.retry_at = state.retry_at or (os.time() + 30)
-        if os.time() >= state.retry_at and NetworkMgr:isOnline() then
-            state.retry_at = nil
-            self:startWorker(state, store)
+        local delay = state.retry_at - os.time()
+        if delay > 0 then return self:schedulePoll(delay) end
+        if not NetworkMgr:isConnected() then
+            state.retry_at = os.time() + 30
+            return self:schedulePoll(30)
         end
+        state.retry_at = nil
+        self:startWorker(state, store)
     end
     self:schedulePoll()
 end
@@ -2510,7 +2512,7 @@ function Yaknigi:onPageUpdate()
     if self.shell and not self.position_soon then
         self.position_soon = function()
             self.position_soon = nil
-            if not self.closed and NetworkMgr:isOnline() then self:saveReading() end
+            if not self.closed and NetworkMgr:isConnected() then self:saveReading() end
         end
         UIManager:scheduleIn(POSITION_WHILE_READING_SECONDS, self.position_soon)
     end
@@ -2648,6 +2650,11 @@ function Yaknigi:syncNotes(closing)
         self.notes_again = not closing
         return
     end
+    if not NetworkMgr:isConnected() then
+        self.notes_dirty = true
+        self.notes_compared_at = os.time()
+        return
+    end
     local token = saved_token()
     if not token then return end
     local known = NotesLocal.known(self.ui)
@@ -2743,6 +2750,8 @@ function Yaknigi:exchange()
         self.exchange_again = true
         return
     end
+    -- The queue is on disk. Wake-up retries also cover Wi-Fi coming back late.
+    if not self.wake_try and not NetworkMgr:isConnected() then return end
     local token = saved_token()
     local card = Session.read_card(store.dir)
     if not token or not card then return end
@@ -2791,8 +2800,9 @@ function Yaknigi:askAboutNews()
     if not news then return end
     local here = math.floor(self.shell:progress() * 100 + 0.5)
     local where = news.progress and ("\nТам %d%%, здесь %d%%."):format(news.progress, here) or ""
-    self.prompt = ConfirmBox:new{
-        text = "Эту книгу читали на другом устройстве." .. where .. "\nПерейти туда?",
+    self.prompt = Notice.confirm{
+        title = "Перейти к месту чтения?",
+        text = "Эту книгу читали на другом устройстве." .. where,
         ok_text = "Перейти",
         cancel_text = "Остаться",
         dismissable = false,
@@ -2855,6 +2865,11 @@ function Yaknigi:saveReading()
 end
 
 function Yaknigi:onSuspend()
+    if self.polling then
+        self.resume_poll = true
+        self:stopPoll()
+    end
+    if self.shell_installed then self.shell:stop() end
     -- The phone may be next: do not leave it a position behind.
     self:saveReading()
     self.wake_try = nil
@@ -2862,6 +2877,12 @@ function Yaknigi:onSuspend()
 end
 
 function Yaknigi:onResume()
+    if self.closed or not self.shell then return end
+    if self.resume_poll then
+        self.resume_poll = nil
+        self:schedulePoll()
+    end
+    if self.shell_installed then self.shell:startClock() end
     -- The phone may have been read while this one slept.
     self.wake_try = 1
     self:exchange()
@@ -2869,6 +2890,13 @@ function Yaknigi:onResume()
     UIManager:scheduleIn(NOTES_AFTER_WAKING_SECONDS, function() self:syncNotes() end)
     -- The time on the page is hours behind.
     if self.shell_installed and self.ui.view then self.shell:onWake() end
+end
+
+function Yaknigi:onYaknigiReadingClockChanged()
+    if self.shell_installed and not self.closed then
+        self.shell:stop()
+        self.shell:startClock()
+    end
 end
 
 function Yaknigi:onCloseDocument()
@@ -2909,7 +2937,7 @@ end
 
 --- The book's place and notes both ways; in the library, the list of books.
 function Yaknigi:syncNow()
-    UIManager:show(Notification:new{ text = "Синхронизация с Яндекс Книгами" })
+    toast("Синхронизация с Яндекс Книгами", "reload")
     if self.ui.document then
         NetworkMgr:runWhenOnline(function()
             self:saveReading()
@@ -2976,7 +3004,7 @@ function Yaknigi:init()
         UIManager:scheduleIn(STARTED_SECONDS, function()
             local version = Updater.confirm(UPDATE_DIR)
             if version then
-                UIManager:show(Notification:new{ text = "Установлена версия " .. version })
+                toast("Установлена версия " .. version)
             end
         end)
     end
@@ -2996,8 +3024,9 @@ function Yaknigi:addToMainMenu(menu_items)
                 enabled_func = function() return saved_token() ~= nil end,
                 keep_menu_open = true,
                 callback = function()
-                    UIManager:show(ConfirmBox:new{
-                        text = "Выйти из аккаунта Яндекса?",
+                    UIManager:show(Notice.confirm{
+                        title = "Выйти из аккаунта Яндекса?",
+                        ok_text = "Выйти",
                         ok_callback = function() save_token(nil) end,
                     })
                 end,
